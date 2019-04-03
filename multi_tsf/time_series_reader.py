@@ -118,11 +118,6 @@ class LSTM_Forecasting_Model(object):
         with tf.Session() as sess:
             sess.run(tf.global_variables_initializer())
 
-            train_loss, train_accuracy = 0, 0
-            val_loss, val_accuracy = 0, 0
-
-            # Initialize iterator with training data
-
             for _ in range(epochs):
                 sess.run(self.iterator.initializer,
                          feed_dict={self.placeholder_X: forecast_data.train_X, self.placeholder_y: forecast_data.train_y})
@@ -134,41 +129,67 @@ class LSTM_Forecasting_Model(object):
                     except tf.errors.OutOfRangeError:
                         break
 
-                sess.run(self.iterator.initializer,
-                         feed_dict={self.placeholder_X: forecast_data.val_X, self.placeholder_y: forecast_data.val_y})
 
-                print('Validation Loss')
-                predicted_ts = []
-                actual_ts = []
-                while (True):
-                    try:
-                        pred_y, val_y = sess.run([self.pred_y, self.data_y])
-                        predicted_ts.append(pred_y)
-                        actual_ts.append(val_y)
-                        print(np.mean(np.square((pred_y-val_y))))
-                    except tf.errors.OutOfRangeError:
-                        break
 
-                predicted_ts = np.vstack(predicted_ts).reshape(-1, self.nb_output_features)
-                actual_ts = np.vstack(actual_ts).reshape(-1, self.nb_output_features)
 
-                fig, ax = plt.subplots()
-                for i in range(self.nb_output_features):
-                    ax.plot(predicted_ts[:, i].squeeze(), label='predicted%d' % i)
-                    ax.plot(actual_ts[:, i].squeeze(), label='actual%d' % i)
-                ax.legend()
-                plt.show()
+            # Plot Test Set Data
+            print('Validation Loss')
+
+            sess.run(self.iterator.initializer,
+                     feed_dict={self.placeholder_X: forecast_data.val_X, self.placeholder_y: forecast_data.val_y})
+            predicted_ts = []
+            actual_ts = []
+            while (True):
+                try:
+                    pred_y, val_y = sess.run([self.pred_y, self.data_y])
+                    predicted_ts.append(pred_y)
+                    actual_ts.append(val_y)
+                    print(np.mean(np.square((pred_y-val_y))))
+                except tf.errors.OutOfRangeError:
+                    break
+
+            predicted_ts = np.vstack(predicted_ts).reshape(-1, self.nb_output_features)
+            actual_ts = np.vstack(actual_ts).reshape(-1, self.nb_output_features)
+
+            fig, axes = plt.subplots(self.nb_output_features, 1)
+
+            for i in range(self.nb_output_features):
+                axes[i].plot(predicted_ts[:, i].squeeze(), label='predicted%d' % i)
+                axes[i].plot(actual_ts[:, i].squeeze(), label='actual%d' % i)
+                axes[i].legend()
+
+            plt.show()
 
 
 class SyntheticSinusoids(object):
 
-    def __init__(self, sampling_rate, length):
-        pass
+    def __init__(self, num_sinusoids, amplitude, sampling_rate, length):
+        self.num_sinusoids = num_sinusoids
+        self.amplitude = amplitude
+        self.sampling_rate = sampling_rate
+        self.length = length
+        n = np.arange(0, self.length)
+
+        self.sinusoids = []
+        for i in range(num_sinusoids):
+            f = np.random.uniform(int(sampling_rate//100), int(self.sampling_rate//30))
+            noise_level = np.random.uniform(0.05, 0.1)
+            x = self.amplitude*np.cos(2*np.pi*f/self.sampling_rate*n) \
+             + np.random.normal(loc=0.0, scale=noise_level*self.amplitude, size=n.shape[0])
+            self.sinusoids.append(x.reshape(-1, 1))
+
+        self.sinusoids = np.concatenate(self.sinusoids, axis=1)
+
+
+    def plot(self):
+        for i in range(self.sinusoids.shape[1]):
+            plt.plot(self.sinusoids[:, i])
+        plt.show()
 
 
 def main():
     # Load Dataset
-    epochs = 1
+    epochs = 10
     batch_size = 64
     nb_steps_in = 100
     nb_steps_out = 1
@@ -181,21 +202,20 @@ def main():
 
 
     #Sinusoid Sample Data
-    n = np.arange(0, 10000)
-    R = 5000
-    f = 60
-    x1 = np.cos(2*np.pi*f/R*n).reshape(-1, 1)
-    x2 = np.cos(2*np.pi*f*0.5/R*n).reshape(-1, 1)
-    x = np.concatenate([x1, x2], axis=1)
-    nb_input_features = x.shape[-1]
+    synthetic_sinusoids = SyntheticSinusoids(num_sinusoids=5,
+                                             amplitude=1,
+                                             sampling_rate=5000,
+                                             length=10000)
 
+
+    nb_input_features = synthetic_sinusoids.sinusoids.shape[1]
 
     if target_index == None:
         nb_output_features = nb_input_features
     else:
         nb_output_features = 1
 
-    forecast_data = ForecastTimeSeries(x, dates=None)
+    forecast_data = ForecastTimeSeries(synthetic_sinusoids.sinusoids, dates=None)
     forecast_data.create_lags_and_target(n_steps_in=nb_steps_in,
                                          n_steps_out=nb_steps_out,
                                          target_index=target_index,
