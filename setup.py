@@ -26,6 +26,7 @@ setup(
                       'pbr>=5.1.2',
                       'protobuf>=3.6.1',
                       'pyparsing>=2.3.1',
+                      'psycopg2>=2.7.7',
                       'python-dateutil>=2.8.0',
                       'pytz>=2018.9',
                       'pyyaml>=5.1',
