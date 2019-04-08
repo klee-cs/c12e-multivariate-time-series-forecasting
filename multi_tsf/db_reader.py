@@ -33,14 +33,25 @@ if __name__ == '__main__':
                     start_ts, work_set_id, demand_context_id, count(*) as row_count, \
                     sum(item_count_nb) as item_count_nb_sum, sum(amount_nb) as amount_nb_sum \
                     from demand where demand_type_c = \'CURRENT\' \
-                    and work_set_id = 125723 and demand_context_id in \
+                    and work_set_id = 12686 and demand_context_id in \
                     (select distinct on (start_ts) demand_context_id \
-                    from demand where demand_type_c = \'CURRENT\' and work_set_id = 125723) \
+                    from demand where demand_type_c = \'CURRENT\' and work_set_id = 12686) \
                     group by work_set_id, start_ts, demand_context_id;"
-    df = pd.read_sql(query, connection)
-    sns.lineplot(df['start_ts'], df['item_count_nb_sum'])
+    df1 = pd.read_sql(query, connection)
+    sns.lineplot(df1['start_ts'], df1['item_count_nb_sum'], label='current_actual')
+    query = "select \
+                        start_ts, work_set_id, demand_context_id, count(*) as row_count, \
+                        sum(item_count_nb) as item_count_nb_sum, sum(amount_nb) as amount_nb_sum \
+                        from demand where demand_type_c = \'PROJECTED\' \
+                        and work_set_id = 12686 and demand_context_id in \
+                        (select distinct on (start_ts) demand_context_id \
+                        from demand where demand_type_c = \'PROJECTED\' and work_set_id = 12686) \
+                        group by work_set_id, start_ts, demand_context_id;"
+    df2 = pd.read_sql(query, connection)
+    sns.lineplot(df2['start_ts'], df2['item_count_nb_sum'], label='projected')
     plt.xlabel('Time')
     plt.ylabel('item_count_nb_sum')
+    plt.legend()
     plt.show()
     cursor.close()
     jackson_ggn_db.connection.close()

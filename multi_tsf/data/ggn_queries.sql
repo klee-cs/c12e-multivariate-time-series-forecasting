@@ -35,6 +35,10 @@ select skill_display_nm, work_set_id
 from work_skill_log a join work_set_log b 
 on a.work_skill_id=b.work_skill_id;
 
+-- counts by skill_nm
+select skill_display_nm, count(skill_display_nm) as work_set_count
+from work_skill_log a join work_set_log b 
+on a.work_skill_id=b.work_skill_id group by skill_display_nm order by work_set_count DESC;
 
 --get half-hourly current workload for given work_set_id
 select start_ts,
@@ -49,3 +53,5 @@ where demand_type_c = 'CURRENT'
       and demand_context_id in (select distinct on (start_ts, work_set_id) demand_context_id
                                   from demand where demand_type_c = 'CURRENT' and work_set_id = 125723)
 group by work_set_id, start_ts, demand_context_id; 
+
+
