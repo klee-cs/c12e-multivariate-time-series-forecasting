@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from multi_tsf.ForecastingModel import ForecastingModel
 from multi_tsf.time_series_utils import SyntheticSinusoids, ForecastTimeSeries
 from typing import List
+import pandas as pd
 
 class WaveNetForecastingModel(ForecastingModel):
 
@@ -59,16 +60,20 @@ class WaveNetForecastingModel(ForecastingModel):
             new_saver.restore(sess, tf.train.latest_checkpoint(self.model_path))
 
             carry = data_X
+            step_predictions = []
             for i in range(nb_steps_out):
-                sess.run(self.iterator.initializer,
+                sess.run(self.val_test_iterator,
                          feed_dict={self.placeholder_X: carry, self.placeholder_y: data_y})
                 carry = sess.run([self.pred_y])[0]
+                step_predictions.append(carry[:, -1, :])
 
-            return carry[:, -1, :]
+            step_predictions = np.concatenate(step_predictions, axis=0)
+
+            return step_predictions
 
 
 def main():
-    epochs = 25
+    epochs = 3
     batch_size = 64
     nb_dilation_factors = [1, 2, 4, 8]
     nb_layers = len(nb_dilation_factors)
@@ -102,10 +107,12 @@ def main():
 
     predicted_ts, actual_ts = wavenet.predict_historical(forecast_data=forecast_data,
                                                                set='Validation',
-                                                               plot=True)
+                                                               plot=False)
 
-    result = wavenet.predict(np.zeros((1, 99, 5)), nb_steps_out=5)
-    print(result)
+    test_input = np.expand_dims(synthetic_sinusoids.sinusoids[-99:, :], axis=0)
+    result = wavenet.predict(test_input, nb_steps_out=5)
+    pd.DataFrame(result).plot()
+    plt.show()
 
 if __name__ == '__main__':
     main()

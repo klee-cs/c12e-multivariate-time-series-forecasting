@@ -47,7 +47,7 @@ class LSTMForecastingModel(ForecastingModel):
         with tf.Session() as sess:
             new_saver = tf.train.import_meta_graph(self.meta_path)
             new_saver.restore(sess, tf.train.latest_checkpoint(self.model_path))
-            sess.run(self.iterator.initializer,
+            sess.run(self.val_test_iterator,
                      feed_dict={self.placeholder_X: data_X, self.placeholder_y: data_y})
             pred_y = sess.run([self.pred_y])
             return pred_y[0]

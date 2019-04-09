@@ -34,9 +34,14 @@ class ForecastingModel(object):
             self.placeholder_y = tf.placeholder(tf.float32, [None, self.nb_steps_in, self.nb_output_features])
 
 
-        self.dataset = tf.data.Dataset.from_tensor_slices((self.placeholder_X, self.placeholder_y))
-        self.dataset = self.dataset.batch(batch_size=self.batch_size)
-        self.iterator = self.dataset.make_initializable_iterator()
+        self.train_dataset = tf.data.Dataset.from_tensor_slices((self.placeholder_X, self.placeholder_y))
+        self.train_dataset = self.train_dataset.batch(batch_size=self.batch_size).shuffle(buffer_size=100000)
+        self.val_test_dataset = tf.data.Dataset.from_tensor_slices((self.placeholder_X, self.placeholder_y))
+        self.val_test_dataset = self.val_test_dataset.batch(batch_size=self.batch_size)
+
+        self.iterator = tf.data.Iterator.from_structure(self.train_dataset.output_types, self.train_dataset.output_shapes)
+        self.train_iterator = self.iterator.make_initializer(self.train_dataset)
+        self.val_test_iterator = self.iterator.make_initializer(self.val_test_dataset)
 
         self.data_X, self.data_y = self.iterator.get_next()
         self._create_model()
@@ -50,7 +55,7 @@ class ForecastingModel(object):
             sess.run(tf.global_variables_initializer())
 
             for _ in range(epochs):
-                sess.run(self.iterator.initializer,
+                sess.run(self.train_iterator,
                          feed_dict={self.placeholder_X: forecast_data.train_X,
                                     self.placeholder_y: forecast_data.train_y})
 
@@ -66,7 +71,7 @@ class ForecastingModel(object):
                 train_mse = np.mean(train_losses)
                 print(train_mse)
 
-                sess.run(self.iterator.initializer,
+                sess.run(self.val_test_iterator,
                          feed_dict={self.placeholder_X: forecast_data.val_X,
                                     self.placeholder_y: forecast_data.val_y})
 
@@ -104,7 +109,7 @@ class ForecastingModel(object):
             new_saver = tf.train.import_meta_graph(self.meta_path)
             new_saver.restore(sess, tf.train.latest_checkpoint(self.model_path))
 
-            sess.run(self.iterator.initializer,
+            sess.run(self.val_test_iterator,
                      feed_dict={self.placeholder_X: _X, self.placeholder_y: _y})
             predicted_ts = []
             actual_ts = []
