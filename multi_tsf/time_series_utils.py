@@ -35,6 +35,8 @@ class ForecastTimeSeries(object):
 
         self.features = np.array(X)
         self.targets = np.array(y)
+        self.nb_input_features = self.features.shape[-1]
+        self.nb_output_features = self.features.shape[-1]
 
 
     def create_shifted_feature_targets(self,
@@ -59,6 +61,8 @@ class ForecastTimeSeries(object):
 
         self.features = np.array(X)
         self.targets = np.array(y)
+        self.nb_input_features = self.features.shape[-1]
+        self.nb_output_features = self.features.shape[-1]
 
 
     def split_train_validation_test(self,

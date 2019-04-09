@@ -42,10 +42,10 @@ if __name__ == '__main__':
     query = "select \
                         start_ts, work_set_id, demand_context_id, count(*) as row_count, \
                         sum(item_count_nb) as item_count_nb_sum, sum(amount_nb) as amount_nb_sum \
-                        from demand where demand_type_c = \'PROJECTED\' \
+                        from demand where demand_type_c = \'COMPLETE\' \
                         and work_set_id = 12686 and demand_context_id in \
                         (select distinct on (start_ts) demand_context_id \
-                        from demand where demand_type_c = \'PROJECTED\' and work_set_id = 12686) \
+                        from demand where demand_type_c = \'COMPLETE\' and work_set_id = 12686) \
                         group by work_set_id, start_ts, demand_context_id;"
     df2 = pd.read_sql(query, connection)
     sns.lineplot(df2['start_ts'], df2['item_count_nb_sum'], label='projected')
