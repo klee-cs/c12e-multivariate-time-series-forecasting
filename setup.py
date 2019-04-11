@@ -43,5 +43,7 @@ setup(
                       'termcolor>=1.1.0',
                       'tqdm>=4.31.1',
                       'werkzeug>=0.14.1'
-    ]
+    ],
+    use_scm_version = True,
+    setup_requires  = ['setuptools_scm']
 )
