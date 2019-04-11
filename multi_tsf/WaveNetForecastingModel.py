@@ -27,6 +27,7 @@ class WaveNetForecastingModel(ForecastingModel):
                          nb_input_features=nb_input_features,
                          nb_output_features=nb_output_features)
 
+    #@TODO Enhance architecture
     def _create_model(self) -> None:
         carry = self.data_X
         for i in range(self.nb_layers):

@@ -31,7 +31,7 @@ select * from work_set_attribute_map a join work_set_attribute b
 on a.work_set_attribute_id = b.work_set_attribute_id;
 
 -- skill_nm to work_set_id
-select skill_display_nm, work_set_id 
+select distinct on (skill_display_nm, work_set_id) skill_display_nm, work_set_id
 from work_skill_log a join work_set_log b 
 on a.work_skill_id=b.work_skill_id;
 
@@ -55,3 +55,37 @@ where demand_type_c = 'CURRENT'
 group by work_set_id, start_ts, demand_context_id; 
 
 
+--half-hourly workload by work_set_id and skill_nm
+SELECT ts.time_stamp, js.*, skill_nm.skill_display_nm
+FROM
+    (SELECT *
+    FROM   generate_series(timestamp '2018-12-31'::timestamp
+                         , timestamp '2019-01-31'::timestamp
+                         , interval  '30 min'::interval) time_stamp
+    WHERE extract(hour from time_stamp) >= 6
+    and extract(hour from time_stamp) <= 23) ts
+
+LEFT JOIN
+    (select start_ts, work_set_id, avg(item_count_nb_sum) as item_count_nb_sum, avg(estimated_completion_time_hrs) as estimated_completion_time_hrs
+    from (
+          select 
+           start_ts,
+           work_set_id,
+           demand_context_id,
+           sum(item_count_nb) as item_count_nb_sum,
+           sum(amount_nb)/(60*60*1000) as estimated_completion_time_hrs
+            from demand 
+            where demand_type_c = 'CURRENT' 
+            and start_ts > '2018-11-31'
+            and start_ts <= '2019-01-31' 
+          group by work_set_id, start_ts, demand_context_id) A
+    group by A.work_set_id, A.start_ts) js
+          
+          on ts.time_stamp = js.start_ts
+
+LEFT JOIN
+  (select distinct on (skill_display_nm, work_set_id) skill_display_nm, work_set_id
+      from work_skill_log a JOIN work_set_log b 
+      on a.work_skill_id=b.work_skill_id) skill_nm 
+
+ON js.work_set_id = skill_nm.work_set_id where skill_nm.skill_display_nm = 'POS Annuity Disbursement File Review Manual';
