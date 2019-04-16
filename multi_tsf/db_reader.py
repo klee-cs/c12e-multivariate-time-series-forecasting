@@ -40,9 +40,9 @@ class Jackson_GGN_DB(object):
         df = pd.read_sql(query, self.connection)
         return df
 
-    def get_ws_time_series_by_skill(self, skill_name, start_time, end_time, from_cache=False):
+    def get_summed_demand_time_series_by_work_set_in_skill(self, skill_name, start_time, end_time, from_cache=False):
         if from_cache:
-            df = pd.read_csv(self.cache_path + '/ws_time_series_%s.csv' % skill_name)
+            df = pd.read_csv(self.cache_path + '/demand_time_series_%s.csv' % skill_name)
             return df
         else:
             query = "SELECT ts.time_stamp, js. *, skill_nm.skill_display_nm \
@@ -57,12 +57,12 @@ class Jackson_GGN_DB(object):
             JOIN work_set_log b on a.work_skill_id = b.work_skill_id) skill_nm ON js.work_set_id = skill_nm.work_set_id \
             where skill_nm.skill_display_nm = '%s';" % (start_time, end_time, start_time, end_time, skill_name)
             df = pd.read_sql(query, self.connection)
-            df.to_csv(self.cache_path + '/ws_time_series_%s.csv' % skill_name)
+            df.to_csv(self.cache_path + '/demand_time_series_%s.csv' % skill_name)
             return df
 
-    def get_summed_ws_time_series_by_skill(self, start_time, end_time, from_cache=False):
+    def get_summed_demand_time_series_by_skill(self, start_time, end_time, from_cache=False):
         if from_cache:
-            df = pd.read_csv(self.cache_path + '/summed_ws_time_series_by_skill.csv')
+            df = pd.read_csv(self.cache_path + '/summed_demand_time_series_by_skill.csv')
             return df
         else:
             query = "SELECT start_ts, skill_display_nm, sum(item_count_nb_sum) as total_item_count, sum(estimated_completion_time_hrs) as total_est_completion_hrs \
@@ -77,38 +77,71 @@ class Jackson_GGN_DB(object):
                         JOIN work_set_log b on a.work_skill_id = b.work_skill_id) skill_nm ON js.work_set_id = skill_nm.work_set_id) \
                         ws_time_series group by start_ts, skill_display_nm" % (start_time, end_time, start_time, end_time)
             df = pd.read_sql(query, self.connection)
-            df.to_csv(self.cache_path + '/summed_ws_time_series_by_skill.csv')
+            df.to_csv(self.cache_path + '/summed_demand_time_series_by_skill.csv')
             return df
 
     def get_summed_work_items_by_work_set(self, start_time, end_time, from_cache=False):
         if from_cache:
-            df = pd.read_csv(self.cache_path + '/summed_work_items_by_work_set.csv')
+            df = pd.read_csv(self.cache_path + '/summed_work_items_by_work_set.csv', index_col=0)
+            df = df.set_index('received_ts_rounded')
             return df
         else:
-            query = "SELECT tmp.work_set_id, count(tmp.work_item_id) as work_item_count, \
-            to_timestamp(floor(extract(EPOCH FROM tmp.received_ts) / 1800) * 1800) AS rec_ts_rounded \
-            FROM (SELECT work_item_id, work_set_id, received_ts, ROW_NUMBER() OVER (PARTITION BY work_item_id ORDER BY received_ts ASC) rn \
-            FROM work_item_log WHERE received_ts >= '%s' and received_ts <= '%s') tmp\
-            WHERE rn = 1 group by work_set_id, rec_ts_rounded;" % (start_time, end_time)
+            query = "SELECT wil_cs.received_ts_rounded, wil_cs.work_set_id, skill_nm.skill_display_nm, wil_cs.rec_item_count \
+            FROM (select received_ts_rounded, work_set_id, count(work_item_id) as rec_item_count \
+            from work_item_log_cs \
+            where received_ts_rounded >= '%s'\
+            and received_ts_rounded <= '%s'\
+            group by received_ts_rounded, work_set_id) as wil_cs \
+            LEFT JOIN \
+            (select distinct on (skill_display_nm, work_set_id) skill_display_nm, work_set_id \
+            from work_skill_log a JOIN work_set_log b \
+            on a.work_skill_id=b.work_skill_id) as skill_nm \
+            on skill_nm.work_set_id = wil_cs.work_set_id; " % (start_time, end_time)
             df = pd.read_sql(query, self.connection)
+            df = df.pivot(index='received_ts_rounded', columns='work_set_id', values='rec_item_count')
+            df_timestamps = pd.DataFrame(pd.date_range(start_time, end_time, freq='30T'), columns=['received_ts_rounded'])
+            df = df_timestamps.join(df, how='left', on='received_ts_rounded')
+            del df_timestamps
+            df = df.fillna(value=0)
             df.to_csv(self.cache_path + '/summed_work_items_by_work_set.csv')
             return df
 
 
     def get_summed_work_items_by_skill(self, start_time, end_time, from_cache=False):
-        pass
+        if from_cache:
+            df = pd.read_csv(self.cache_path + '/summed_work_items_by_skill.csv', index_col=0)
+            df = df.set_index('received_ts_rounded')
+            return df
+        else:
+            query = "select wil_cs.received_ts_rounded, skill_nm.skill_display_nm, sum(wil_cs.rec_item_count) as rec_item_count from \
+            (select received_ts_rounded, work_set_id, count(work_item_id) as rec_item_count \
+            from work_item_log_cs \
+            where received_ts_rounded >= '%s'\
+            and received_ts_rounded <= '%s'\
+            group by received_ts_rounded, work_set_id) as wil_cs\
+            LEFT JOIN\
+            (select distinct on (skill_display_nm, work_set_id) skill_display_nm, work_set_id\
+            from work_skill_log a JOIN work_set_log b \
+            on a.work_skill_id=b.work_skill_id) as skill_nm \
+            on skill_nm.work_set_id = wil_cs.work_set_id\
+            group by wil_cs.received_ts_rounded, skill_nm.skill_display_nm;" % (start_time, end_time)
+            df = pd.read_sql(query, self.connection)
+            df = df.pivot(index='received_ts_rounded', columns='skill_display_nm', values='rec_item_count')
+            df_timestamps = pd.DataFrame(pd.date_range(start_time, end_time, freq='30T'), columns=['received_ts_rounded'])
+            df = df_timestamps.join(df, how='left', on='received_ts_rounded')
+            del df_timestamps
+            df = df.fillna(value=0)
+            df.to_csv(self.cache_path + '/summed_work_items_by_skill.csv')
+            return df
 
 
 if __name__ == '__main__':
     jackson_ggn_db = Jackson_GGN_DB(cache_path='./data')
-    # df = jackson_ggn_db.get_ws_time_series_by_skill(skill_name='POS Annuity Disbursement File Review Manual',
-    #                                                 start_time='2018-12-31',
-    #                                                 end_time='2019-01-31',
-    #                                                 from_cache=False)
-    # df.pivot(index='start_ts', columns='work_set_id', values='item_count_nb_sum').sum(axis=1).plot()
-    df = jackson_ggn_db.get_summed_work_items_by_work_set(start_time='2018-12-31',
+    skill_ts = jackson_ggn_db.get_summed_work_items_by_skill(start_time='2018-08-31',
                                                            end_time='2019-01-31',
                                                            from_cache=False)
-    df.pivot(index='rec_ts_rounded', columns='work_set_id', values='work_item_count').plot(legend=None)
+    most_common_skills = skill_ts.sum(axis=0).sort_values(ascending=False)
+    skill_ts = skill_ts[most_common_skills.index.tolist()[0:10]]
+    skill_ts.plot()
     plt.show()
     jackson_ggn_db.close()

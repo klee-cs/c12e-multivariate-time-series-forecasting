@@ -54,7 +54,7 @@ where demand_type_c = 'CURRENT'
                                   from demand where demand_type_c = 'CURRENT' and work_set_id = 125723)
 group by work_set_id, start_ts, demand_context_id; 
 
-
+-------------------------DEMAND--------------------------
 --half-hourly workload by work_set_id and skill_nm
 SELECT ts.time_stamp, js.*, skill_nm.skill_display_nm
 FROM
@@ -128,14 +128,95 @@ ON js.work_set_id = skill_nm.work_set_id) ws_time_series group by start_ts, skil
 
 
 -----------------Work Item Log-----------------
- 
-SELECT count(tmp.work_item_id), tmp.work_set_id,
-      to_timestamp(floor(extract(EPOCH FROM tmp.received_ts) / 1800) * 1800) AS rec_ts_rounded 
-      FROM (
- SELECT work_item_id, work_set_id, received_ts,
-  ROW_NUMBER() OVER (PARTITION BY work_item_id ORDER BY received_ts ASC) rn
- FROM work_item_log 
-) tmp WHERE rn = 1 group by work_set_id, rec_ts_rounded limit 100;
+select * from work_item_log_cs limit 100;
 
 
-select * from work_item_log limit 100;
+--Get counts by work_set_id
+SELECT ts.time_stamp, wil_cs.received_ts_rounded, 
+        wil_cs.work_set_id, 
+        skill_nm.skill_display_nm, 
+        wil_cs.rec_item_count
+FROM
+      (SELECT *
+        FROM   generate_series(timestamp '2018-12-31'::timestamp
+                             , timestamp '2019-01-31'::timestamp
+                             , interval  '30 min'::interval) time_stamp
+        WHERE extract(hour from time_stamp) >= 6
+        and extract(hour from time_stamp) <= 23) as ts
+
+    LEFT JOIN
+      (select received_ts_rounded, work_set_id, count(work_item_id) as rec_item_count 
+          from work_item_log_cs 
+          where received_ts_rounded >= '2018-12-31'
+          and received_ts_rounded <= '2019-01-31'
+          group by received_ts_rounded, work_set_id) as wil_cs
+            
+    on ts.time_stamp = wil_cs.received_ts_rounded
+    
+    LEFT JOIN
+      (select distinct on (skill_display_nm, work_set_id) skill_display_nm, work_set_id
+          from work_skill_log a JOIN work_set_log b 
+          on a.work_skill_id=b.work_skill_id) as skill_nm 
+          
+    on skill_nm.work_set_id = wil_cs.work_set_id; 
+
+
+--Get counts by skill name
+select wil_cs.received_ts_rounded
+      , skill_nm.skill_display_nm
+      , sum(wil_cs.rec_item_count) as rec_item_count 
+from 
+      (SELECT *
+        FROM   generate_series(timestamp '2018-12-31'::timestamp
+                             , timestamp '2019-01-31'::timestamp
+                             , interval  '30 min'::interval) time_stamp
+        WHERE extract(hour from time_stamp) >= 6
+        and extract(hour from time_stamp) <= 23) as ts
+
+    LEFT JOIN
+      (select received_ts_rounded, work_set_id, count(work_item_id) as rec_item_count 
+          from work_item_log_cs 
+          where received_ts_rounded >= '2018-12-31'
+          and received_ts_rounded <= '2019-01-31'
+          group by received_ts_rounded, work_set_id) as wil_cs
+            
+    on ts.time_stamp = wil_cs.received_ts_rounded
+    
+    LEFT JOIN
+      (select distinct on (skill_display_nm, work_set_id) skill_display_nm, work_set_id
+          from work_skill_log a JOIN work_set_log b 
+          on a.work_skill_id=b.work_skill_id) as skill_nm       
+    on skill_nm.work_set_id = wil_cs.work_set_id
+    
+group by wil_cs.received_ts_rounded, skill_nm.skill_display_nm;
+
+-- Problem: not all timestamps are there
+SELECT t1.time_stamp, t2.received_ts_rounded, t2.work_set_id, t2.skill_display_nm, t2.rec_item_count    
+FROM
+        (select *
+                from   generate_series(timestamp '2018-07-01'::timestamp
+                                     , timestamp '2018-12-31'::timestamp
+                                     , interval  '30 min'::interval) time_stamp
+                ) t1
+left join
+
+        (select A.received_ts_rounded
+              , A.work_set_id, B.skill_display_nm
+              , A.rec_item_count
+      
+        from    
+              (select received_ts_rounded, work_set_id, count(work_item_id) as rec_item_count 
+                        from work_item_log_cs 
+                         where received_ts_rounded >= '2018-07-01'
+                         and received_ts_rounded <= '2018-12-31'
+                        group by received_ts_rounded, work_set_id) A
+
+        join 
+              (select distinct on (skill_display_nm, work_set_id) skill_display_nm, work_set_id
+                        from work_skill_log a JOIN work_set_log b 
+                        on a.work_skill_id=b.work_skill_id -- and skill_display_nm = 'ISR Discrepancy Report'
+                        ) B
+
+        on A.work_set_id = B.work_set_id) t2 
+        
+on t1.time_stamp = t2.received_ts_rounded ;

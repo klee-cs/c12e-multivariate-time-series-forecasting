@@ -40,9 +40,15 @@ class LSTMForecastingModel(ForecastingModel):
         time_distributed = keras.layers.TimeDistributed(keras.layers.Dense(self.nb_output_features, activation=keras.activations.tanh))
         self.pred_y = time_distributed(decoder_output)
         self.loss = tf.losses.mean_squared_error(self.data_y, self.pred_y)
+        with tf.name_scope('Loss'):
+            tf.summary.scalar('loss', self.loss)
+        with tf.name_scope('Inputs/Outputs'):
+            tf.summary.histogram('input_features', self.data_X)
+            tf.summary.histogram('output_targets', self.data_y)
 
     def predict(self,
                 data_X: np.array) -> np.array:
+        data_X = np.expand_dims(data_X, axis=0)
         data_y = np.zeros((1, self.nb_steps_out, self.nb_output_features))
         with tf.Session() as sess:
             new_saver = tf.train.import_meta_graph(self.meta_path)
@@ -54,10 +60,15 @@ class LSTMForecastingModel(ForecastingModel):
 
     def plot_historical(self,
                         predicted_ts: np.array,
-                        actual_ts: np.array) -> None:
-        fig1, axes1 = plt.subplots(self.nb_output_features, 2)
+                        actual_ts: np.array,
+                        num_features_display: int = None) -> None:
+        if num_features_display is None:
+            num_features_display = self.nb_output_features
+        fig1, axes1 = plt.subplots(num_features_display, 2)
 
-        for i in range(self.nb_output_features):
+
+
+        for i in range(num_features_display):
             axes1[i, 0].plot(predicted_ts[:, i].squeeze(), label='predicted%d' % i)
             axes1[i, 0].plot(actual_ts[:, i].squeeze(), label='actual%d' % i)
             axes1[i, 0].legend()
@@ -75,6 +86,8 @@ class LSTMForecastingModel(ForecastingModel):
 def main():
     # Load Dataset
     epochs = 1
+    train_size = 0.7
+    val_size = 0.15
     batch_size = 64
     nb_steps_in = 100
     nb_steps_out = 5
@@ -87,12 +100,12 @@ def main():
                                              length=10000)
 
 
-    forecast_data = ForecastTimeSeries(synthetic_sinusoids.sinusoids)
-    forecast_data.create_lags_and_target(n_steps_in=nb_steps_in,
-                                         n_steps_out=nb_steps_out,
-                                         target_index=target_index)
-    forecast_data.split_train_validation_test(train_size=0.7,
-                                              val_size=0.15)
+    forecast_data = ForecastTimeSeries(synthetic_sinusoids.sinusoids,
+                                       train_size=train_size,
+                                       val_size=val_size,
+                                       nb_steps_in=nb_steps_in,
+                                       nb_steps_out=nb_steps_out,
+                                       target_index=target_index)
 
     lstm_forecast = LSTMForecastingModel(name='LSTM',
                                            nb_decoder_layers=2,
@@ -110,9 +123,10 @@ def main():
 
     predicted_ts, actual_ts = lstm_forecast.predict_historical(forecast_data=forecast_data,
                                                                set='Validation',
-                                                               plot=True)
+                                                               plot=True,
+                                                               num_features_display=5)
 
-    result = lstm_forecast.predict(np.zeros((1, nb_steps_in, 5)))
+    result = lstm_forecast.predict(np.zeros((nb_steps_in, 5)))
     print(result[0].shape)
 
 

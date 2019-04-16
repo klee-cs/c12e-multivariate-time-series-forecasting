@@ -41,13 +41,18 @@ class WaveNetForecastingModel(ForecastingModel):
         time_distributed = keras.layers.TimeDistributed(keras.layers.Dense(self.nb_output_features, activation=keras.activations.tanh))
         self.pred_y = time_distributed(carry)
         self.loss = tf.losses.mean_squared_error(self.data_y, self.pred_y)
+        with tf.name_scope('Loss'):
+            tf.summary.scalar('loss', self.loss)
 
-    def plot_historical(self, predicted_ts: np.array, actual_ts: np.array) -> None:
-        fig1, axes1 = plt.subplots(self.nb_output_features, 1)
+    def plot_historical(self, predicted_ts: np.array, actual_ts: np.array, num_features_display: int = None) -> None:
+        if num_features_display is None:
+            num_features_display = self.nb_output_features
+        fig1, axes1 = plt.subplots(num_features_display, 1)
         predicted_ts = predicted_ts[0::self.nb_steps_in]
         actual_ts = actual_ts[0::self.nb_steps_in]
 
-        for i in range(self.nb_output_features):
+
+        for i in range(num_features_display):
             axes1[i].plot(predicted_ts[:, i].squeeze(), label='predicted%d' % i)
             axes1[i].plot(actual_ts[:, i].squeeze(), label='actual%d' % i)
             axes1[i].legend()
@@ -55,6 +60,7 @@ class WaveNetForecastingModel(ForecastingModel):
         plt.show()
 
     def predict(self, data_X: np.array, nb_steps_out: int) -> np.array:
+        data_X = np.expand_dims(data_X, axis=0)
         data_y = np.zeros((1, self.nb_steps_in, self.nb_output_features))
         with tf.Session() as sess:
             new_saver = tf.train.import_meta_graph(self.meta_path)
@@ -75,23 +81,28 @@ class WaveNetForecastingModel(ForecastingModel):
 
 def main():
     epochs = 3
+    train_size = 0.7
+    val_size = 0.15
     batch_size = 64
     nb_dilation_factors = [1, 2, 4, 8]
     nb_layers = len(nb_dilation_factors)
     nb_filters = 64
     nb_steps_in = 100
+    nb_steps_out = None
     target_index = None
+
     # Sinusoid Sample Data
     synthetic_sinusoids = SyntheticSinusoids(num_sinusoids=5,
                                              amplitude=1,
                                              sampling_rate=5000,
                                              length=5000)
 
-    forecast_data = ForecastTimeSeries(synthetic_sinusoids.sinusoids)
-    forecast_data.create_shifted_feature_targets(max_look_back=nb_steps_in,
-                                                 target_index=target_index)
-    forecast_data.split_train_validation_test(train_size=0.7,
-                                              val_size=0.15)
+    forecast_data = ForecastTimeSeries(synthetic_sinusoids.sinusoids,
+                                       train_size=train_size,
+                                       val_size=val_size,
+                                       nb_steps_in=nb_steps_in,
+                                       nb_steps_out=nb_steps_out,
+                                       target_index=target_index)
 
     wavenet = WaveNetForecastingModel(name='WaveNet',
                                         nb_layers=nb_layers,
@@ -108,9 +119,10 @@ def main():
 
     predicted_ts, actual_ts = wavenet.predict_historical(forecast_data=forecast_data,
                                                                set='Validation',
-                                                               plot=False)
+                                                               plot=True,
+                                                         num_features_display=5)
 
-    test_input = np.expand_dims(synthetic_sinusoids.sinusoids[-99:, :], axis=0)
+    test_input = synthetic_sinusoids.sinusoids[-99:, :]
     result = wavenet.predict(test_input, nb_steps_out=5)
     pd.DataFrame(result).plot()
     plt.show()

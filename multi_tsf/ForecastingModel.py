@@ -1,4 +1,5 @@
 import os
+import shutil
 import numpy as np
 import tensorflow as tf
 from multi_tsf.time_series_utils import ForecastTimeSeries
@@ -52,8 +53,19 @@ class ForecastingModel(object):
         self.saver = tf.train.Saver()
 
         with tf.Session() as sess:
+            merged = tf.summary.merge_all()
             sess.run(tf.global_variables_initializer())
+            try:
+                shutil.rmtree(model_path + '/logs/train')
+                shutil.rmtree(model_path + '/logs/test')
+            except FileNotFoundError as fnf_error:
+                pass
+            self.train_writer = tf.summary.FileWriter(model_path + '/logs/train', sess.graph)
+            self.test_writer = tf.summary.FileWriter(model_path + '/logs/test')
 
+            train_i = 0
+            val_i = 0
+            print('Train MSE', 'Val MSE')
             for _ in range(epochs):
                 sess.run(self.train_iterator,
                          feed_dict={self.placeholder_X: forecast_data.train_X,
@@ -62,14 +74,14 @@ class ForecastingModel(object):
                 train_losses = []
                 while(True):
                     try:
-                        _, loss = sess.run([train_op, self.loss])
+                        _, loss, summary = sess.run([train_op, self.loss, merged])
+                        self.train_writer.add_summary(summary, train_i)
                         train_losses.append(loss)
+                        train_i += 1
                     except tf.errors.OutOfRangeError:
                         break
 
-                print('Train MSE')
                 train_mse = np.mean(train_losses)
-                print(train_mse)
 
                 sess.run(self.val_test_iterator,
                          feed_dict={self.placeholder_X: forecast_data.val_X,
@@ -78,13 +90,14 @@ class ForecastingModel(object):
                 val_losses = []
                 while(True):
                     try:
-                        loss = sess.run([self.loss])
+                        loss, summary = sess.run([self.loss, merged])
+                        self.test_writer.add_summary(summary, val_i)
                         val_losses.append(loss)
+                        val_i += 1
                     except tf.errors.OutOfRangeError:
                         break
                 val_mse = np.mean(val_losses)
-                print('Validaiton MSE')
-                print(val_mse)
+                print(train_mse, val_mse)
 
             self.model_path = model_path
             self.saver.save(sess, model_path + '/' + self.name, global_step=epochs)
@@ -96,7 +109,8 @@ class ForecastingModel(object):
     def predict_historical(self,
                            forecast_data: ForecastTimeSeries,
                            set: str = 'Validation',
-                           plot=False):
+                           plot: bool =False,
+                           num_features_display: int = None):
         if set == 'Validation':
             _X, _y = forecast_data.val_X, forecast_data.val_y
         elif set == 'Test':
@@ -127,6 +141,6 @@ class ForecastingModel(object):
             print(np.mean(np.square(predicted_ts - actual_ts)))
 
             if plot == True:
-                self.plot_historical(predicted_ts, actual_ts)
+                self.plot_historical(predicted_ts, actual_ts, num_features_display)
 
             return predicted_ts, actual_ts

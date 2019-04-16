@@ -6,21 +6,38 @@ from typing import Optional
 
 class ForecastTimeSeries(object):
 
-    def __init__(self, time_series: np.array) -> None:
+    def __init__(self,
+                 time_series: np.array,
+                 train_size: float,
+                 val_size: float,
+                 nb_steps_in,
+                 nb_steps_out,
+                 target_index):
         self.time_series = time_series
+        if nb_steps_out is None:
+            self._create_shifted_feature_targets(max_look_back=nb_steps_in,
+                                                 target_index=target_index)
+        else:
+            self._create_lags_and_target(nb_steps_in=nb_steps_in,
+                                         nb_steps_out=nb_steps_out,
+                                         target_index=target_index)
+        self._split_train_validation_test(train_size=train_size,
+                                          val_size=val_size)
 
-    def create_lags_and_target(self,
-                               n_steps_in: int,
-                               n_steps_out: int,
-                               target_index: Optional[int]) -> None:
 
+    def _create_lags_and_target(self,
+                                nb_steps_in: int,
+                                nb_steps_out: int,
+                                target_index: int = None) -> None:
 
+        self.nb_steps_in = nb_steps_in
+        self.nb_steps_out = nb_steps_out
 
         X, y = [], []
         for i in range(self.time_series.shape[0]):
             # find the end of this pattern
-            end_ix = i + n_steps_in
-            out_end_ix = end_ix + n_steps_out
+            end_ix = i + self.nb_steps_in
+            out_end_ix = end_ix + self.nb_steps_out
             # check if we are beyond the dataset
             if out_end_ix > len(self.time_series):
                 break
@@ -39,9 +56,9 @@ class ForecastTimeSeries(object):
         self.nb_output_features = self.features.shape[-1]
 
 
-    def create_shifted_feature_targets(self,
-                               max_look_back: int,
-                               target_index: Optional[int]) -> None:
+    def _create_shifted_feature_targets(self,
+                                max_look_back: int,
+                                target_index: int) -> None:
 
         X, y = [], []
         for i in range(self.time_series.shape[0]):
@@ -65,7 +82,7 @@ class ForecastTimeSeries(object):
         self.nb_output_features = self.features.shape[-1]
 
 
-    def split_train_validation_test(self,
+    def _split_train_validation_test(self,
                                train_size: float,
                                val_size: float) -> None:
 
@@ -110,17 +127,33 @@ class SyntheticSinusoids(object):
 
 
 def main():
+    nb_steps_in = 100
+    nb_steps_out = 5
+    target_index = None
+    train_size = 0.7
+    val_size = 0.15
     synthetic_sinusoids = SyntheticSinusoids(num_sinusoids=5,
                                              amplitude=1,
                                              sampling_rate=5000,
                                              length=10000)
-    sinusoid_ts = ForecastTimeSeries(synthetic_sinusoids.sinusoids)
-    sinusoid_ts.create_shifted_feature_targets(max_look_back=1000, target_index=0)
-    index = np.arange(0, 999)
-    sns.lineplot(index, sinusoid_ts.features[0, :, 0].reshape(-1,), label='actual')
-    sns.lineplot(index, sinusoid_ts.targets[0, :, 0].reshape(-1,), label='predicted')
+    wavenet_sinusoid_ts = ForecastTimeSeries(synthetic_sinusoids.sinusoids,
+                                             train_size=train_size,
+                                             val_size=val_size,
+                                             nb_steps_in=nb_steps_in,
+                                             nb_steps_out=None,
+                                             target_index=None)
+    index = np.arange(0, 99)
+    sns.lineplot(index, wavenet_sinusoid_ts.features[0, :, 0].reshape(-1, ), label='predicted')
+    sns.lineplot(index, wavenet_sinusoid_ts.targets[0, :, 0].reshape(-1, ), label='actual')
     plt.legend()
     plt.show()
+    lstm_sinusoid_ts = ForecastTimeSeries(synthetic_sinusoids.sinusoids,
+                                          train_size=train_size,
+                                          val_size=val_size,
+                                          nb_steps_in=100,
+                                          nb_steps_out=5,
+                                          target_index=None)
+
 
 if __name__ == '__main__':
     main()
