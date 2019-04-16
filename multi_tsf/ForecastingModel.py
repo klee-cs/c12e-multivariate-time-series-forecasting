@@ -36,7 +36,7 @@ class ForecastingModel(object):
 
 
         self.train_dataset = tf.data.Dataset.from_tensor_slices((self.placeholder_X, self.placeholder_y))
-        self.train_dataset = self.train_dataset.batch(batch_size=self.batch_size).shuffle(buffer_size=100000)
+        self.train_dataset = self.train_dataset.batch(batch_size=self.batch_size).repeat(count=epochs).shuffle(buffer_size=100000)
         self.val_test_dataset = tf.data.Dataset.from_tensor_slices((self.placeholder_X, self.placeholder_y))
         self.val_test_dataset = self.val_test_dataset.batch(batch_size=self.batch_size)
 
@@ -65,39 +65,30 @@ class ForecastingModel(object):
 
             train_i = 0
             val_i = 0
-            print('Train MSE', 'Val MSE')
-            for _ in range(epochs):
-                sess.run(self.train_iterator,
-                         feed_dict={self.placeholder_X: forecast_data.train_X,
-                                    self.placeholder_y: forecast_data.train_y})
+            sess.run(self.train_iterator,
+                     feed_dict={self.placeholder_X: forecast_data.train_X,
+                                self.placeholder_y: forecast_data.train_y})
 
-                train_losses = []
-                while(True):
-                    try:
-                        _, loss, summary = sess.run([train_op, self.loss, merged])
-                        self.train_writer.add_summary(summary, train_i)
-                        train_losses.append(loss)
-                        train_i += 1
-                    except tf.errors.OutOfRangeError:
-                        break
+            while(True):
+                try:
+                    _, loss, summary = sess.run([train_op, self.loss, merged])
+                    self.train_writer.add_summary(summary, train_i)
+                    train_i += 1
+                except tf.errors.OutOfRangeError:
+                    break
 
-                train_mse = np.mean(train_losses)
 
-                sess.run(self.val_test_iterator,
-                         feed_dict={self.placeholder_X: forecast_data.val_X,
-                                    self.placeholder_y: forecast_data.val_y})
+            sess.run(self.val_test_iterator,
+                     feed_dict={self.placeholder_X: forecast_data.val_X,
+                                self.placeholder_y: forecast_data.val_y})
 
-                val_losses = []
-                while(True):
-                    try:
-                        loss, summary = sess.run([self.loss, merged])
-                        self.test_writer.add_summary(summary, val_i)
-                        val_losses.append(loss)
-                        val_i += 1
-                    except tf.errors.OutOfRangeError:
-                        break
-                val_mse = np.mean(val_losses)
-                print(train_mse, val_mse)
+            while(True):
+                try:
+                    loss, summary = sess.run([self.loss, merged])
+                    self.test_writer.add_summary(summary, val_i)
+                    val_i += 1
+                except tf.errors.OutOfRangeError:
+                    break
 
             self.model_path = model_path
             self.saver.save(sess, model_path + '/' + self.name, global_step=epochs)

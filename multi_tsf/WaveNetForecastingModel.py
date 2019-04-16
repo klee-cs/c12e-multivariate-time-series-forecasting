@@ -38,7 +38,7 @@ class WaveNetForecastingModel(ForecastingModel):
                                             dilation_rate=self.nb_dilation_factors[i],
                                             activation=keras.activations.relu)
             carry = dcc_layer(carry)
-        time_distributed = keras.layers.TimeDistributed(keras.layers.Dense(self.nb_output_features, activation=keras.activations.tanh))
+        time_distributed = keras.layers.TimeDistributed(keras.layers.Dense(self.nb_output_features, activation=keras.activations.relu))
         self.pred_y = time_distributed(carry)
         self.loss = tf.losses.mean_squared_error(self.data_y, self.pred_y)
         with tf.name_scope('Loss'):
@@ -51,11 +51,15 @@ class WaveNetForecastingModel(ForecastingModel):
         predicted_ts = predicted_ts[0::self.nb_steps_in]
         actual_ts = actual_ts[0::self.nb_steps_in]
 
-
-        for i in range(num_features_display):
-            axes1[i].plot(predicted_ts[:, i].squeeze(), label='predicted%d' % i)
-            axes1[i].plot(actual_ts[:, i].squeeze(), label='actual%d' % i)
-            axes1[i].legend()
+        if num_features_display == 1:
+            axes1.plot(predicted_ts.squeeze(), label='predicted')
+            axes1.plot(actual_ts.squeeze(), label='actual')
+            axes1.legend()
+        else:
+            for i in range(num_features_display):
+                axes1[i].plot(predicted_ts[:, i].squeeze(), label='predicted%d' % i)
+                axes1[i].plot(actual_ts[:, i].squeeze(), label='actual%d' % i)
+                axes1[i].legend()
 
         plt.show()
 
@@ -80,7 +84,8 @@ class WaveNetForecastingModel(ForecastingModel):
 
 
 def main():
-    epochs = 3
+    epochs = 5
+    num_sinusoids = 1
     train_size = 0.7
     val_size = 0.15
     batch_size = 64
@@ -89,10 +94,10 @@ def main():
     nb_filters = 64
     nb_steps_in = 100
     nb_steps_out = None
-    target_index = None
+    target_index = 0
 
     # Sinusoid Sample Data
-    synthetic_sinusoids = SyntheticSinusoids(num_sinusoids=5,
+    synthetic_sinusoids = SyntheticSinusoids(num_sinusoids=num_sinusoids,
                                              amplitude=1,
                                              sampling_rate=5000,
                                              length=5000)
@@ -118,9 +123,9 @@ def main():
                           batch_size=batch_size)
 
     predicted_ts, actual_ts = wavenet.predict_historical(forecast_data=forecast_data,
-                                                               set='Validation',
-                                                               plot=True,
-                                                         num_features_display=5)
+                                                         set='Validation',
+                                                         plot=True,
+                                                         num_features_display=num_sinusoids)
 
     test_input = synthetic_sinusoids.sinusoids[-99:, :]
     result = wavenet.predict(test_input, nb_steps_out=5)
