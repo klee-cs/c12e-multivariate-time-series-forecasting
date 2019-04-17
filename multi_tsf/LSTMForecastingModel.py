@@ -1,5 +1,6 @@
 import keras
 import numpy as np
+import pandas as pd
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -18,9 +19,11 @@ class LSTMForecastingModel(ForecastingModel):
                  nb_input_features: int,
                  nb_output_features: int) -> None:
         super().__init__(name,
-                         nb_steps_in,
-                         nb_input_features,
-                         nb_output_features)
+                         vector_output_mode=True,
+                         nb_steps_in=nb_steps_in,
+                         nb_steps_out=nb_steps_out,
+                         nb_input_features=nb_input_features,
+                         nb_output_features=nb_output_features)
         self.nb_units = nb_units
         self.nb_encoder_layers = nb_encoder_layers
         self.nb_decoder_layers = nb_decoder_layers
@@ -37,7 +40,7 @@ class LSTMForecastingModel(ForecastingModel):
         decoder_layer = keras.layers.RNN(decoder_rnn_cells,
                                          return_sequences=True)
         decoder_output = decoder_layer(repeat_output)
-        time_distributed = keras.layers.TimeDistributed(keras.layers.Dense(self.nb_output_features, activation=keras.activations.tanh))
+        time_distributed = keras.layers.TimeDistributed(keras.layers.Dense(self.nb_output_features, activation=keras.activations.relu))
         self.pred_y = time_distributed(decoder_output)
         self.loss = tf.losses.mean_squared_error(self.data_y, self.pred_y)
         with tf.name_scope('Loss'):
@@ -98,9 +101,11 @@ def main():
                                              amplitude=1,
                                              sampling_rate=5000,
                                              length=10000)
+    sinusoids = pd.DataFrame(synthetic_sinusoids.sinusoids)
 
 
-    forecast_data = ForecastTimeSeries(synthetic_sinusoids.sinusoids,
+    forecast_data = ForecastTimeSeries(sinusoids,
+                                       vector_output_mode=True,
                                        train_size=train_size,
                                        val_size=val_size,
                                        nb_steps_in=nb_steps_in,
@@ -108,13 +113,13 @@ def main():
                                        target_index=target_index)
 
     lstm_forecast = LSTMForecastingModel(name='LSTM',
-                                           nb_decoder_layers=2,
-                                           nb_encoder_layers=2,
-                                           nb_units=100,
-                                           nb_steps_in=nb_steps_in,
-                                           nb_steps_out=nb_steps_out,
-                                           nb_input_features=forecast_data.nb_input_features,
-                                           nb_output_features=forecast_data.nb_output_features)
+                                         nb_decoder_layers=2,
+                                         nb_encoder_layers=2,
+                                         nb_units=100,
+                                         nb_steps_in=nb_steps_in,
+                                         nb_steps_out=nb_steps_out,
+                                         nb_input_features=forecast_data.nb_input_features,
+                                         nb_output_features=forecast_data.nb_output_features)
 
     lstm_forecast.fit(forecast_data=forecast_data,
                       model_path='./lstm_test',

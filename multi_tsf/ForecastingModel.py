@@ -7,11 +7,15 @@ from multi_tsf.time_series_utils import ForecastTimeSeries
 class ForecastingModel(object):
     def __init__(self,
                  name: str,
+                 vector_output_mode: bool,
                  nb_steps_in: int,
+                 nb_steps_out: int,
                  nb_input_features: int,
                  nb_output_features: int) -> None:
         self.name = name
+        self.vector_output_mode = vector_output_mode
         self.nb_steps_in = nb_steps_in
+        self.nb_steps_out = nb_steps_out
         self.nb_input_features = nb_input_features
         self.nb_output_features = nb_output_features
 
@@ -29,14 +33,14 @@ class ForecastingModel(object):
 
         self.batch_size = batch_size
         self.placeholder_X = tf.placeholder(tf.float32, [None, self.nb_steps_in, self.nb_input_features])
-        if self.nb_steps_out is not None:
+        if self.vector_output_mode:
             self.placeholder_y = tf.placeholder(tf.float32, [None, self.nb_steps_out, self.nb_output_features])
         else:
             self.placeholder_y = tf.placeholder(tf.float32, [None, self.nb_steps_in, self.nb_output_features])
 
 
         self.train_dataset = tf.data.Dataset.from_tensor_slices((self.placeholder_X, self.placeholder_y))
-        self.train_dataset = self.train_dataset.batch(batch_size=self.batch_size).repeat(count=epochs).shuffle(buffer_size=100000)
+        self.train_dataset = self.train_dataset.batch(batch_size=self.batch_size).shuffle(buffer_size=100000)
         self.val_test_dataset = tf.data.Dataset.from_tensor_slices((self.placeholder_X, self.placeholder_y))
         self.val_test_dataset = self.val_test_dataset.batch(batch_size=self.batch_size)
 
@@ -69,26 +73,27 @@ class ForecastingModel(object):
                      feed_dict={self.placeholder_X: forecast_data.train_X,
                                 self.placeholder_y: forecast_data.train_y})
 
-            while(True):
-                try:
-                    _, loss, summary = sess.run([train_op, self.loss, merged])
-                    self.train_writer.add_summary(summary, train_i)
-                    train_i += 1
-                except tf.errors.OutOfRangeError:
-                    break
+            for _ in range(epochs):
+                while(True):
+                    try:
+                        _, loss, summary = sess.run([train_op, self.loss, merged])
+                        self.train_writer.add_summary(summary, train_i)
+                        train_i += 1
+                    except tf.errors.OutOfRangeError:
+                        break
 
 
-            sess.run(self.val_test_iterator,
-                     feed_dict={self.placeholder_X: forecast_data.val_X,
-                                self.placeholder_y: forecast_data.val_y})
+                sess.run(self.val_test_iterator,
+                         feed_dict={self.placeholder_X: forecast_data.val_X,
+                                    self.placeholder_y: forecast_data.val_y})
 
-            while(True):
-                try:
-                    loss, summary = sess.run([self.loss, merged])
-                    self.test_writer.add_summary(summary, val_i)
-                    val_i += 1
-                except tf.errors.OutOfRangeError:
-                    break
+                while(True):
+                    try:
+                        loss, summary = sess.run([self.loss, merged])
+                        self.test_writer.add_summary(summary, val_i)
+                        val_i += 1
+                    except tf.errors.OutOfRangeError:
+                        break
 
             self.model_path = model_path
             self.saver.save(sess, model_path + '/' + self.name, global_step=epochs)
@@ -135,3 +140,8 @@ class ForecastingModel(object):
                 self.plot_historical(predicted_ts, actual_ts, num_features_display)
 
             return predicted_ts, actual_ts
+
+
+    def predict_periods(self,
+                        forecast_data: ForecastTimeSeries):
+        pass

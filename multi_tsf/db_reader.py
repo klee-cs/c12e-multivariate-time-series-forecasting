@@ -84,6 +84,7 @@ class Jackson_GGN_DB(object):
         if from_cache:
             df = pd.read_csv(self.cache_path + '/summed_work_items_by_work_set.csv', index_col=0)
             df = df.set_index('received_ts_rounded')
+            df.index = pd.to_datetime(df.index)
             return df
         else:
             query = "SELECT wil_cs.received_ts_rounded, wil_cs.work_set_id, skill_nm.skill_display_nm, wil_cs.rec_item_count \
@@ -98,11 +99,13 @@ class Jackson_GGN_DB(object):
             on a.work_skill_id=b.work_skill_id) as skill_nm \
             on skill_nm.work_set_id = wil_cs.work_set_id; " % (start_time, end_time)
             df = pd.read_sql(query, self.connection)
+            df.dropna(inplace=True)
             df = df.pivot(index='received_ts_rounded', columns='work_set_id', values='rec_item_count')
             df_timestamps = pd.DataFrame(pd.date_range(start_time, end_time, freq='30T'), columns=['received_ts_rounded'])
             df = df_timestamps.join(df, how='left', on='received_ts_rounded')
             del df_timestamps
             df = df.fillna(value=0)
+            df.index = pd.to_datetime(df.index)
             df.to_csv(self.cache_path + '/summed_work_items_by_work_set.csv')
             return df
 
@@ -111,6 +114,7 @@ class Jackson_GGN_DB(object):
         if from_cache:
             df = pd.read_csv(self.cache_path + '/summed_work_items_by_skill.csv', index_col=0)
             df = df.set_index('received_ts_rounded')
+            df.index = pd.to_datetime(df.index)
             return df
         else:
             query = "select wil_cs.received_ts_rounded, skill_nm.skill_display_nm, sum(wil_cs.rec_item_count) as rec_item_count from \
@@ -126,11 +130,13 @@ class Jackson_GGN_DB(object):
             on skill_nm.work_set_id = wil_cs.work_set_id\
             group by wil_cs.received_ts_rounded, skill_nm.skill_display_nm;" % (start_time, end_time)
             df = pd.read_sql(query, self.connection)
+            df.dropna(inplace=True)
             df = df.pivot(index='received_ts_rounded', columns='skill_display_nm', values='rec_item_count')
             df_timestamps = pd.DataFrame(pd.date_range(start_time, end_time, freq='30T'), columns=['received_ts_rounded'])
             df = df_timestamps.join(df, how='left', on='received_ts_rounded')
             del df_timestamps
             df = df.fillna(value=0)
+            df.index = pd.to_datetime(df.index)
             df.to_csv(self.cache_path + '/summed_work_items_by_skill.csv')
             return df
 

@@ -23,7 +23,9 @@ class WaveNetForecastingModel(ForecastingModel):
         self.nb_dilation_factors = nb_dilation_factors
         self.nb_steps_out = None
         super().__init__(name=name,
+                         vector_output_mode=False,
                          nb_steps_in=max_look_back-1,
+                         nb_steps_out=None,
                          nb_input_features=nb_input_features,
                          nb_output_features=nb_output_features)
 
@@ -31,13 +33,17 @@ class WaveNetForecastingModel(ForecastingModel):
     def _create_model(self) -> None:
         carry = self.data_X
         for i in range(self.nb_layers):
-            dcc_layer = keras.layers.Conv1D(filters=self.nb_filters,
-                                            kernel_size=2,
-                                            strides=1,
-                                            padding='causal',
-                                            dilation_rate=self.nb_dilation_factors[i],
-                                            activation=keras.activations.relu)
-            carry = dcc_layer(carry)
+            dcc_layer = tf.keras.layers.Conv1D(filters=self.nb_filters,
+                                               kernel_size=2,
+                                               strides=1,
+                                               padding='causal',
+                                               dilation_rate=self.nb_dilation_factors[i],
+                                               activation=keras.activations.relu)
+            #Residual Connections
+            if i > 0:
+                carry = tf.keras.layers.add([dcc_layer(carry), carry])
+            else:
+                carry = dcc_layer(carry)
         time_distributed = keras.layers.TimeDistributed(keras.layers.Dense(self.nb_output_features, activation=keras.activations.relu))
         self.pred_y = time_distributed(carry)
         self.loss = tf.losses.mean_squared_error(self.data_y, self.pred_y)
@@ -85,7 +91,7 @@ class WaveNetForecastingModel(ForecastingModel):
 
 def main():
     epochs = 5
-    num_sinusoids = 1
+    num_sinusoids = 5
     train_size = 0.7
     val_size = 0.15
     batch_size = 64
@@ -94,7 +100,7 @@ def main():
     nb_filters = 64
     nb_steps_in = 100
     nb_steps_out = None
-    target_index = 0
+    target_index = None
 
     # Sinusoid Sample Data
     synthetic_sinusoids = SyntheticSinusoids(num_sinusoids=num_sinusoids,
@@ -102,7 +108,10 @@ def main():
                                              sampling_rate=5000,
                                              length=5000)
 
-    forecast_data = ForecastTimeSeries(synthetic_sinusoids.sinusoids,
+    sinusoids = pd.DataFrame(synthetic_sinusoids.sinusoids)
+
+    forecast_data = ForecastTimeSeries(sinusoids,
+                                       vector_output_mode=False,
                                        train_size=train_size,
                                        val_size=val_size,
                                        nb_steps_in=nb_steps_in,
@@ -110,12 +119,12 @@ def main():
                                        target_index=target_index)
 
     wavenet = WaveNetForecastingModel(name='WaveNet',
-                                        nb_layers=nb_layers,
-                                        nb_filters=nb_filters,
-                                        nb_dilation_factors=nb_dilation_factors,
-                                        max_look_back=nb_steps_in,
-                                        nb_input_features=forecast_data.nb_input_features,
-                                        nb_output_features=forecast_data.nb_output_features)
+                                      nb_layers=nb_layers,
+                                      nb_filters=nb_filters,
+                                      nb_dilation_factors=nb_dilation_factors,
+                                      max_look_back=nb_steps_in,
+                                      nb_input_features=forecast_data.nb_input_features,
+                                      nb_output_features=forecast_data.nb_output_features)
 
     wavenet.fit(forecast_data=forecast_data,
                           model_path='./wavenet_test',
