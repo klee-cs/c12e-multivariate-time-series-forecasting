@@ -3,20 +3,19 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from multi_tsf.WaveNetForecastingModel import WaveNetForecastingModel
-from multi_tsf.LSTMForecastingModel import LSTMForecastingModel
-from multi_tsf.time_series_utils import SyntheticSinusoids, ForecastTimeSeries
+from multi_tsf.time_series_utils import ForecastTimeSeries
 from multi_tsf.db_reader import Jackson_GGN_DB
 
 
 def main():
-    epochs = 1
+    epochs = 3
     train_size = 0.7
     val_size = 0.15
-    batch_size = 64
-    nb_dilation_factors = [1, 2, 4, 8]
+    batch_size = 25
+    nb_dilation_factors = [1, 2, 4, 8, 16, 32, 64]
     nb_layers = len(nb_dilation_factors)
-    nb_filters = 64
-    nb_steps_in = 336
+    nb_filters = 25
+    nb_steps_in = 168
     nb_steps_out = None
     nb_predict_steps_out = 24
     target_index = 0
@@ -41,6 +40,8 @@ def main():
                                                                                            target_index=target_index,
                                                                                            predict_hour=7)
 
+    print(period_features.shape)
+    print(period_targets.shape)
 
     ##################WaveNet######################
     wavenet = WaveNetForecastingModel(name='WaveNet',
@@ -68,8 +69,6 @@ def main():
         y_pred = wavenet.predict(period_features[i], nb_steps_out=nb_predict_steps_out)
         y_preds.append(y_pred)
         y_actuals.append(period_targets[i])
-        print(y_pred.shape)
-        print(period_targets[i].shape)
     y_preds = np.vstack(y_preds)
     y_actuals = np.vstack(y_actuals)
     index = np.arange(0, y_preds.shape[0])

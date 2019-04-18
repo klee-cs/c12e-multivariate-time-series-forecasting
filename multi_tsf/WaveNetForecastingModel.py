@@ -38,15 +38,22 @@ class WaveNetForecastingModel(ForecastingModel):
                                                strides=1,
                                                padding='causal',
                                                dilation_rate=self.nb_dilation_factors[i],
-                                               activation=keras.activations.relu)
+                                               activation=keras.activations.relu,
+                                               kernel_regularizer=tf.keras.regularizers.l2(l=0.00))
             #Residual Connections
             if i > 0:
                 carry = tf.keras.layers.add([dcc_layer(carry), carry])
             else:
                 carry = dcc_layer(carry)
-        time_distributed = keras.layers.TimeDistributed(keras.layers.Dense(self.nb_output_features, activation=keras.activations.relu))
-        self.pred_y = time_distributed(carry)
-        self.loss = tf.losses.mean_squared_error(self.data_y, self.pred_y)
+        final_dcc_layer = tf.keras.layers.Conv1D(filters=self.nb_output_features,
+                                               kernel_size=1,
+                                               strides=1,
+                                               padding='same',
+                                               dilation_rate=1,
+                                               activation=keras.activations.relu,
+                                                 kernel_regularizer=tf.keras.regularizers.l2(l=0.00))
+        self.pred_y = final_dcc_layer(carry)
+        self.loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(self.pred_y, self.data_y))
         with tf.name_scope('Loss'):
             tf.summary.scalar('loss', self.loss)
 

@@ -94,6 +94,7 @@ class ForecastTimeSeries(object):
         self.period_dates = []
         self.period_features = []
         self.period_targets = []
+
         for i in range(self.time_series.shape[0]):
             hour = self.dates[i].hour
             min = self.dates[i].minute
@@ -110,6 +111,9 @@ class ForecastTimeSeries(object):
                     self.period_targets.append(target)
         self.period_features =np.array(self.period_features)
         self.period_targets = np.array(self.period_targets)
+        if self.nb_output_features == 1:
+            self.period_features = np.expand_dims(self.period_features, axis=2)
+            self.period_targets = np.expand_dims(self.period_targets, axis=2)
         return self.period_dates, self.period_features, self.period_targets
 
 
@@ -202,12 +206,12 @@ def main():
     plt.legend()
     plt.show()
 
-    predict_period_features, predict_period_targets = wavenet_sinusoid_ts.create_predict_periods(nb_steps_in=nb_steps_in-1,
+    period_dates, period_features, period_targets = wavenet_sinusoid_ts.create_predict_periods(nb_steps_in=nb_steps_in-1,
                                                                                                  nb_steps_out=24,
                                                                                                  target_index=target_index,
                                                                                                  predict_hour=7)
-    print(predict_period_features.shape)
-    print(predict_period_targets.shape)
+    print(period_features.shape)
+    print(period_targets.shape)
 
 
 if __name__ == '__main__':

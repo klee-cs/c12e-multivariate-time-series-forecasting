@@ -69,11 +69,11 @@ class ForecastingModel(object):
 
             train_i = 0
             val_i = 0
-            sess.run(self.train_iterator,
-                     feed_dict={self.placeholder_X: forecast_data.train_X,
-                                self.placeholder_y: forecast_data.train_y})
 
             for _ in range(epochs):
+                sess.run(self.train_iterator,
+                         feed_dict={self.placeholder_X: forecast_data.train_X,
+                                    self.placeholder_y: forecast_data.train_y})
                 while(True):
                     try:
                         _, loss, summary = sess.run([train_op, self.loss, merged])
