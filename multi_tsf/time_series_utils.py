@@ -19,13 +19,21 @@ class ForecastTimeSeries(object):
         self.column_names = ts_df.columns
         self.time_series = ts_df.values
         self.dates = ts_df.index.tolist()
+        self.features = None
+        self.targets = None
+        self.nb_steps_out = None
+        self.nb_steps_in = None
+        self.nb_input_features = None
+        self.nb_output_features = None
+        self.period_dates = None
+        self.period_features = None
+        self.period_targets = None
         if self.vector_output_mode:
             self._create_lags_and_target(nb_steps_in=nb_steps_in,
                                          nb_steps_out=nb_steps_out,
                                          target_index=target_index)
         else:
-            self._create_shifted_feature_targets(max_look_back=nb_steps_in,
-                                                 target_index=target_index)
+            self._create_shifted_feature_targets(target_index=target_index)
         self._split_train_validation_test(train_size=train_size,
                                           val_size=val_size)
 
@@ -61,28 +69,21 @@ class ForecastTimeSeries(object):
         self.nb_output_features = self.features.shape[-1]
 
 
-    def _create_shifted_feature_targets(self,
-                                max_look_back: int,
-                                target_index: int) -> None:
+    def _create_shifted_feature_targets(self, target_index: int) -> None:
+        if target_index is not None:
+            seq_x, seq_y = self.time_series[:-1, target_index], self.time_series[1:, target_index]
+            seq_y = np.expand_dims(seq_y, axis=1)
+        else:
+            seq_x, seq_y = self.time_series[:-1, :], self.time_series[1:, :]
+        if self.time_series.shape[-1] == 1:
+            seq_x = np.expand_dims(seq_x, axis=1)
 
-        X, y = [], []
-        for i in range(self.time_series.shape[0]):
-            # find the end of this pattern
-            end_ix = i + max_look_back
-            # check if we are beyond the dataset
-            if end_ix > len(self.time_series):
-                break
-            # gather input and output parts of the pattern
-            if target_index is not None:
-                seq_x, seq_y = self.time_series[i:end_ix-1, :], self.time_series[i+1:end_ix, target_index]
-                seq_y = np.expand_dims(seq_y, axis=1)
-            else:
-                seq_x, seq_y = self.time_series[i:end_ix-1, :], self.time_series[i+1:end_ix, :]
-            X.append(seq_x)
-            y.append(seq_y)
+        self.nb_steps_in = None
+        self.nb_steps_out = None
 
-        self.features = np.array(X)
-        self.targets = np.array(y)
+        self.features = np.expand_dims(seq_x, axis=0)
+        self.targets = np.expand_dims(seq_y, axis=0)
+
         self.nb_input_features = self.features.shape[-1]
         self.nb_output_features = self.features.shape[-1]
 
@@ -124,15 +125,27 @@ class ForecastTimeSeries(object):
         train_cutoff = math.ceil(self.time_series.shape[0] * train_size)
         val_cutoff = math.ceil(self.time_series.shape[0] * (train_size + val_size))
 
-        self.train_X = self.features[:train_cutoff]
-        self.train_y = self.targets[:train_cutoff]
+        if self.vector_output_mode:
+            self.train_X = self.features[:train_cutoff]
+            self.train_y = self.targets[:train_cutoff]
 
-        self.val_X = self.features[train_cutoff:val_cutoff]
-        self.val_y = self.targets[train_cutoff:val_cutoff]
+            self.val_X = self.features[train_cutoff:val_cutoff]
+            self.val_y = self.targets[train_cutoff:val_cutoff]
 
-        self.test_X = self.features[val_cutoff:]
-        self.test_y = self.targets[val_cutoff:]
+            self.test_X = self.features[val_cutoff:]
+            self.test_y = self.targets[val_cutoff:]
 
+        else:
+            self.train_X = self.features[:, :train_cutoff, :]
+            self.train_y = self.targets[:, :train_cutoff, :]
+
+            self.val_X = self.features[:, train_cutoff:val_cutoff, :]
+            self.val_y = self.targets[:, train_cutoff:val_cutoff, :]
+
+            self.test_X = self.features[:, val_cutoff:, :]
+            self.test_y = self.targets[:, val_cutoff:, :]
+
+            print(self.train_X.shape)
 
 class SyntheticSinusoids(object):
 

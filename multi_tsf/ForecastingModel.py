@@ -2,6 +2,9 @@ import os
 import shutil
 import numpy as np
 import tensorflow as tf
+import seaborn as sns
+import matplotlib.pyplot as plt
+from typing import Optional
 from multi_tsf.time_series_utils import ForecastTimeSeries
 
 class ForecastingModel(object):
@@ -9,7 +12,7 @@ class ForecastingModel(object):
                  name: str,
                  vector_output_mode: bool,
                  nb_steps_in: int,
-                 nb_steps_out: int,
+                 nb_steps_out: Optional[int],
                  nb_input_features: int,
                  nb_output_features: int) -> None:
         self.name = name
@@ -19,7 +22,7 @@ class ForecastingModel(object):
         self.nb_input_features = nb_input_features
         self.nb_output_features = nb_output_features
 
-    def _create_model(self):
+    def _create_model(self, data_X: tf.Tensor, data_y: tf.Tensor) -> (tf.Tensor, tf.Tensor):
         raise NotImplementedError("Must override _create_model")
 
     def fit(self,
@@ -32,24 +35,25 @@ class ForecastingModel(object):
         os.makedirs(model_path, exist_ok=True)
 
         self.batch_size = batch_size
-        self.placeholder_X = tf.placeholder(tf.float32, [None, self.nb_steps_in, self.nb_input_features])
+
         if self.vector_output_mode:
+            self.placeholder_X = tf.placeholder(tf.float32, [None, self.nb_steps_in, self.nb_input_features])
             self.placeholder_y = tf.placeholder(tf.float32, [None, self.nb_steps_out, self.nb_output_features])
+            self.train_dataset = tf.data.Dataset.from_tensor_slices((self.placeholder_X, self.placeholder_y))
+            self.val_dataset = tf.data.Dataset.from_tensor_slices((self.placeholder_X, self.placeholder_y))
+            self.train_dataset = self.train_dataset.batch(batch_size=self.batch_size).shuffle(buffer_size=100000)
+            self.val_dataset = self.val_dataset.batch(batch_size=self.batch_size)
         else:
-            self.placeholder_y = tf.placeholder(tf.float32, [None, self.nb_steps_in, self.nb_output_features])
+            self.placeholder_X = tf.placeholder(tf.float32, [None, None, self.nb_input_features])
+            self.placeholder_y = tf.placeholder(tf.float32, [None, None, self.nb_output_features])
+            self.dataset = tf.data.Dataset.from_tensor_slices((self.placeholder_X, self.placeholder_y))
+            self.dataset = self.dataset.batch(batch_size=1)
 
 
-        self.train_dataset = tf.data.Dataset.from_tensor_slices((self.placeholder_X, self.placeholder_y))
-        self.train_dataset = self.train_dataset.batch(batch_size=self.batch_size).shuffle(buffer_size=100000)
-        self.val_test_dataset = tf.data.Dataset.from_tensor_slices((self.placeholder_X, self.placeholder_y))
-        self.val_test_dataset = self.val_test_dataset.batch(batch_size=self.batch_size)
-
-        self.iterator = tf.data.Iterator.from_structure(self.train_dataset.output_types, self.train_dataset.output_shapes)
-        self.train_iterator = self.iterator.make_initializer(self.train_dataset)
-        self.val_test_iterator = self.iterator.make_initializer(self.val_test_dataset)
-
+        self.iterator = self.dataset.make_initializable_iterator()
         self.data_X, self.data_y = self.iterator.get_next()
-        self._create_model()
+        self.loss, self.pred_y = self._create_model(self.data_X, self.data_y)
+
 
         self.optimizer = tf.train.AdamOptimizer(lr)
         train_op = self.optimizer.minimize(self.loss)
@@ -69,31 +73,43 @@ class ForecastingModel(object):
 
             train_i = 0
             val_i = 0
+            plot_pred_y = None
+            plot_data_y = None
 
             for _ in range(epochs):
-                sess.run(self.train_iterator,
+                sess.run(self.iterator.initializer,
                          feed_dict={self.placeholder_X: forecast_data.train_X,
                                     self.placeholder_y: forecast_data.train_y})
                 while(True):
                     try:
-                        _, loss, summary = sess.run([train_op, self.loss, merged])
+                        _, loss, pred_y, data_y, summary = sess.run([train_op, self.loss, self.pred_y, self.data_y, merged])
                         self.train_writer.add_summary(summary, train_i)
+                        print(loss)
                         train_i += 1
                     except tf.errors.OutOfRangeError:
                         break
 
-
-                sess.run(self.val_test_iterator,
+                sess.run(self.iterator.initializer,
                          feed_dict={self.placeholder_X: forecast_data.val_X,
                                     self.placeholder_y: forecast_data.val_y})
 
                 while(True):
                     try:
-                        loss, summary = sess.run([self.loss, merged])
+                        loss, pred_y, data_y, summary = sess.run([self.loss, self.pred_y, self.data_y, merged])
                         self.test_writer.add_summary(summary, val_i)
+                        print(loss)
+                        plot_pred_y = pred_y
+                        plot_data_y = data_y
                         val_i += 1
                     except tf.errors.OutOfRangeError:
                         break
+
+            index = np.arange(0, plot_pred_y.shape[1])
+            sns.lineplot(index, plot_pred_y[0, :, 0].reshape(-1, ), label='predicted')
+            sns.lineplot(index, plot_data_y[0, :, 0].reshape(-1, ), label='actual')
+            plt.legend()
+            plt.title('Validation Set')
+            plt.show()
 
             self.model_path = model_path
             self.saver.save(sess, model_path + '/' + self.name, global_step=epochs)
@@ -119,11 +135,11 @@ class ForecastingModel(object):
             new_saver = tf.train.import_meta_graph(self.meta_path)
             new_saver.restore(sess, tf.train.latest_checkpoint(self.model_path))
 
-            sess.run(self.val_test_iterator,
+            sess.run(self.val_iterator,
                      feed_dict={self.placeholder_X: _X, self.placeholder_y: _y})
             predicted_ts = []
             actual_ts = []
-            while (True):
+            while(True):
                 try:
                     pred_y, val_y = sess.run([self.pred_y, self.data_y])
                     predicted_ts.append(pred_y)
@@ -133,15 +149,9 @@ class ForecastingModel(object):
 
             predicted_ts = np.vstack(predicted_ts).reshape(-1, self.nb_output_features)
             actual_ts = np.vstack(actual_ts).reshape(-1, self.nb_output_features)
-            print('MSE')
-            print(np.mean(np.square(predicted_ts - actual_ts)))
 
             if plot == True:
                 self.plot_historical(predicted_ts, actual_ts, num_features_display)
 
             return predicted_ts, actual_ts
 
-
-    def predict_periods(self,
-                        forecast_data: ForecastTimeSeries):
-        pass

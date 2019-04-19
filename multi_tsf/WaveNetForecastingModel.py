@@ -1,37 +1,62 @@
 import keras
 import numpy as np
+import os
+import shutil
 import tensorflow as tf
+import seaborn as sns
 import matplotlib.pyplot as plt
-from multi_tsf.ForecastingModel import ForecastingModel
 from multi_tsf.time_series_utils import SyntheticSinusoids, ForecastTimeSeries
 from typing import List
 import pandas as pd
 
-class WaveNetForecastingModel(ForecastingModel):
+class WaveNetForecastingModel(object):
 
     def __init__(self,
                  name: str,
                  nb_layers: int,
                  nb_filters: int,
                  nb_dilation_factors: List[int],
-                 max_look_back: int,
                  nb_input_features: int,
                  nb_output_features: int) -> None:
 
+        self.name = name
         self.nb_layers = nb_layers
         self.nb_filters = nb_filters
         self.nb_dilation_factors = nb_dilation_factors
-        self.nb_steps_out = None
-        super().__init__(name=name,
-                         vector_output_mode=False,
-                         nb_steps_in=max_look_back-1,
-                         nb_steps_out=None,
-                         nb_input_features=nb_input_features,
-                         nb_output_features=nb_output_features)
+        self.nb_input_features = nb_input_features
+        self.nb_output_features = nb_output_features
+        self.placeholder_X = None
+        self.placeholder_y = None
+        self.dataset = None
+        self.iterator = None
+        self.data_X = None
+        self.data_y = None
+        self.pred_y = None
+        self.batch_size = None
+        self.loss = None
+        self.saver = None
+        self.optimizer = None
+        self.train_writer = None
+        self.test_writer = None
+        self.model_path = None
+        self.meta_path = None
 
-    #@TODO Enhance architecture
-    def _create_model(self) -> None:
-        carry = self.data_X
+
+    def _create_model(self, data_X: tf.Tensor, data_y: tf.Tensor) -> (tf.Tensor, tf.Tensor):
+        carry = data_X
+        skip_connection = tf.keras.layers.Conv1D(filters=self.nb_filters,
+                                                 kernel_size=1,
+                                                 padding='same',
+                                                 activation=tf.keras.activations.relu)
+        #Skip connection
+        dcc_layer1 = tf.keras.layers.Conv1D(filters=self.nb_filters,
+                                               kernel_size=2,
+                                               strides=1,
+                                               padding='causal',
+                                               dilation_rate=1,
+                                               activation=keras.activations.relu,
+                                               kernel_regularizer=tf.keras.regularizers.l2(l=0.01))
+        carry = tf.keras.layers.add([skip_connection(carry), dcc_layer1(carry)])
         for i in range(self.nb_layers):
             dcc_layer = tf.keras.layers.Conv1D(filters=self.nb_filters,
                                                kernel_size=2,
@@ -39,75 +64,149 @@ class WaveNetForecastingModel(ForecastingModel):
                                                padding='causal',
                                                dilation_rate=self.nb_dilation_factors[i],
                                                activation=keras.activations.relu,
-                                               kernel_regularizer=tf.keras.regularizers.l2(l=0.00))
+                                               kernel_regularizer=tf.keras.regularizers.l2(l=0.01))
             #Residual Connections
-            if i > 0:
-                carry = tf.keras.layers.add([dcc_layer(carry), carry])
-            else:
-                carry = dcc_layer(carry)
+            carry = tf.keras.layers.add([dcc_layer(carry), carry])
+
         final_dcc_layer = tf.keras.layers.Conv1D(filters=self.nb_output_features,
-                                               kernel_size=1,
-                                               strides=1,
-                                               padding='same',
-                                               dilation_rate=1,
-                                               activation=keras.activations.relu,
-                                                 kernel_regularizer=tf.keras.regularizers.l2(l=0.00))
+                                                 kernel_size=1,
+                                                 strides=1,
+                                                 padding='same',
+                                                 activation=keras.activations.relu,
+                                                 kernel_regularizer=tf.keras.regularizers.l2(l=0.01))
         self.pred_y = final_dcc_layer(carry)
-        self.loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(self.pred_y, self.data_y))
+        loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(self.pred_y, data_y))
+        naive_loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(data_X, data_y))
         with tf.name_scope('Loss'):
-            tf.summary.scalar('loss', self.loss)
+            tf.summary.scalar('loss', loss)
+            tf.summary.scalar('naive_loss', naive_loss)
 
-    def plot_historical(self, predicted_ts: np.array, actual_ts: np.array, num_features_display: int = None) -> None:
-        if num_features_display is None:
-            num_features_display = self.nb_output_features
-        fig1, axes1 = plt.subplots(num_features_display, 1)
-        predicted_ts = predicted_ts[0::self.nb_steps_in]
-        actual_ts = actual_ts[0::self.nb_steps_in]
+        return loss, self.pred_y
 
-        if num_features_display == 1:
-            axes1.plot(predicted_ts.squeeze(), label='predicted')
-            axes1.plot(actual_ts.squeeze(), label='actual')
-            axes1.legend()
-        else:
-            for i in range(num_features_display):
-                axes1[i].plot(predicted_ts[:, i].squeeze(), label='predicted%d' % i)
-                axes1[i].plot(actual_ts[:, i].squeeze(), label='actual%d' % i)
-                axes1[i].legend()
 
-        plt.show()
+    def fit(self,
+            forecast_data: ForecastTimeSeries,
+            model_path: str,
+            epochs: int,
+            batch_size: int,
+            lr: float = 1e-3):
+        os.makedirs(model_path, exist_ok=True)
+        self.batch_size = batch_size
+        self.placeholder_X = tf.placeholder(tf.float32, [None, None, self.nb_input_features])
+        self.placeholder_y = tf.placeholder(tf.float32, [None, None, self.nb_output_features])
+        self.dataset = tf.data.Dataset.from_tensor_slices((self.placeholder_X, self.placeholder_y))
+        self.batched_dataset = self.dataset.batch(batch_size=self.batch_size)
 
-    def predict(self, data_X: np.array, nb_steps_out: int) -> np.array:
-        data_X = np.expand_dims(data_X, axis=0)
-        data_y = np.zeros((1, self.nb_steps_in, self.nb_output_features))
+        self.iterator = self.batched_dataset.make_initializable_iterator()
+        self.data_X, self.data_y = self.iterator.get_next()
+        self.loss, self.pred_y = self._create_model(self.data_X, self.data_y)
+
+        self.optimizer = tf.train.AdamOptimizer(lr)
+        train_op = self.optimizer.minimize(self.loss)
+
+        self.saver = tf.train.Saver()
+
+        with tf.Session() as sess:
+            merged = tf.summary.merge_all()
+            sess.run(tf.global_variables_initializer())
+            try:
+                shutil.rmtree(model_path + '/logs/train')
+                shutil.rmtree(model_path + '/logs/test')
+            except FileNotFoundError as fnf_error:
+                pass
+            self.train_writer = tf.summary.FileWriter(model_path + '/logs/train', sess.graph)
+            self.test_writer = tf.summary.FileWriter(model_path + '/logs/test')
+
+            train_i = 0
+            val_i = 0
+            plot_pred_y = None
+            plot_data_y = None
+
+            for _ in range(epochs):
+                sess.run(self.iterator.initializer,
+                         feed_dict={self.placeholder_X: forecast_data.train_X,
+                                    self.placeholder_y: forecast_data.train_y})
+                while (True):
+                    try:
+                        _, loss, pred_y, data_y, summary = sess.run(
+                            [train_op, self.loss, self.pred_y, self.data_y, merged])
+                        self.train_writer.add_summary(summary, train_i)
+                        train_i += 1
+                        print(loss)
+                    except tf.errors.OutOfRangeError:
+                        break
+
+                sess.run(self.iterator.initializer,
+                         feed_dict={self.placeholder_X: forecast_data.val_X,
+                                    self.placeholder_y: forecast_data.val_y})
+
+                while (True):
+                    try:
+                        loss, pred_y, data_y, summary = sess.run([self.loss, self.pred_y, self.data_y, merged])
+                        self.test_writer.add_summary(summary, val_i)
+                        plot_pred_y = pred_y
+                        plot_data_y = data_y
+                        val_i += 1
+                    except tf.errors.OutOfRangeError:
+                        break
+
+            index = np.arange(0, plot_pred_y.shape[1])
+            sns.lineplot(index, plot_pred_y[0, :, 0].reshape(-1, ), label='predicted')
+            sns.lineplot(index, plot_data_y[0, :, 0].reshape(-1, ), label='actual')
+            plt.legend()
+            plt.title('Validation Set')
+            plt.show()
+
+            self.model_path = model_path
+            self.saver.save(sess, model_path + '/' + self.name, global_step=epochs)
+            self.meta_path = model_path + '/' + self.name + '-%d.meta' % epochs
+
+
+
+    def predict(self,
+                history: np.array,
+                future: np.array,
+                nb_steps_out: int) -> np.array:
+        proxy_y = np.zeros((history.shape[0], history.shape[1], self.nb_output_features))
         with tf.Session() as sess:
             new_saver = tf.train.import_meta_graph(self.meta_path)
             new_saver.restore(sess, tf.train.latest_checkpoint(self.model_path))
-
-            carry = data_X
+            carry = history
             step_predictions = []
             for i in range(nb_steps_out):
-                sess.run(self.val_test_iterator,
-                         feed_dict={self.placeholder_X: carry, self.placeholder_y: data_y})
-                carry = sess.run([self.pred_y])[0]
+                sess.run(self.iterator.initializer, feed_dict={self.placeholder_X: carry, self.placeholder_y: proxy_y})
+                carries = []
+                while (True):
+                    try:
+                        carry = sess.run([self.pred_y])[0]
+                        carries.append(carry)
+                    except tf.errors.OutOfRangeError:
+                        break
+                carry = np.vstack(carries)
                 step_predictions.append(carry[:, -1, :])
 
-            step_predictions = np.concatenate(step_predictions, axis=0)
-
-            return step_predictions
+        predictions = np.hstack(step_predictions).flatten()
+        future = future.flatten()
+        index = np.arange(0, predictions.shape[0])
+        sns.lineplot(index[0:336], predictions[0:336], label='prediction')
+        sns.lineplot(index[0:336], future[0:336], label='future')
+        print(np.mean(np.abs(predictions-future)))
+        plt.legend()
+        plt.show()
+        return predictions
 
 
 def main():
     epochs = 5
-    num_sinusoids = 5
+    num_sinusoids = 1
     train_size = 0.7
     val_size = 0.15
-    batch_size = 64
     nb_dilation_factors = [1, 2, 4, 8]
     nb_layers = len(nb_dilation_factors)
     nb_filters = 64
     nb_steps_in = 100
     nb_steps_out = None
-    target_index = None
+    target_index = 0
 
     # Sinusoid Sample Data
     synthetic_sinusoids = SyntheticSinusoids(num_sinusoids=num_sinusoids,
@@ -129,24 +228,16 @@ def main():
                                       nb_layers=nb_layers,
                                       nb_filters=nb_filters,
                                       nb_dilation_factors=nb_dilation_factors,
-                                      max_look_back=nb_steps_in,
                                       nb_input_features=forecast_data.nb_input_features,
                                       nb_output_features=forecast_data.nb_output_features)
 
     wavenet.fit(forecast_data=forecast_data,
-                          model_path='./wavenet_test',
-                          epochs=epochs,
-                          batch_size=batch_size)
+                model_path='./wavenet_test',
+                epochs=epochs,
+                batch_size=64)
 
-    predicted_ts, actual_ts = wavenet.predict_historical(forecast_data=forecast_data,
-                                                         set='Validation',
-                                                         plot=True,
-                                                         num_features_display=num_sinusoids)
-
-    test_input = synthetic_sinusoids.sinusoids[-99:, :]
-    result = wavenet.predict(test_input, nb_steps_out=5)
-    pd.DataFrame(result).plot()
-    plt.show()
+    step_predictions = wavenet.predict(history=forecast_data.time_series, nb_steps_out=24)
+    print(step_predictions.shape)
 
 if __name__ == '__main__':
     main()

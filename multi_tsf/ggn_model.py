@@ -8,16 +8,15 @@ from multi_tsf.db_reader import Jackson_GGN_DB
 
 
 def main():
-    epochs = 3
+    epochs = 150
     train_size = 0.7
     val_size = 0.15
-    batch_size = 25
-    nb_dilation_factors = [1, 2, 4, 8, 16, 32, 64]
+    batch_size = 64
+    nb_dilation_factors = [1, 2, 4, 8, 16, 32, 64, 128]
     nb_layers = len(nb_dilation_factors)
+    nb_steps_in = 520
+    nb_steps_out = 34
     nb_filters = 25
-    nb_steps_in = 168
-    nb_steps_out = None
-    nb_predict_steps_out = 24
     target_index = 0
     num_top_skills = 1
 
@@ -35,20 +34,19 @@ def main():
                                        nb_steps_in=nb_steps_in,
                                        nb_steps_out=nb_steps_out,
                                        target_index=target_index)
-    period_dates, period_features, period_targets = forecast_data.create_predict_periods(nb_steps_in=nb_steps_in - 1,
-                                                                                           nb_steps_out=nb_predict_steps_out,
-                                                                                           target_index=target_index,
-                                                                                           predict_hour=7)
 
-    print(period_features.shape)
-    print(period_targets.shape)
+
+    period_dates, period_features, period_targets = forecast_data.create_predict_periods(nb_steps_in=nb_steps_in,
+                                                                                         nb_steps_out=nb_steps_out,
+                                                                                         target_index=target_index,
+                                                                                         predict_hour=7)
+
 
     ##################WaveNet######################
     wavenet = WaveNetForecastingModel(name='WaveNet',
                                       nb_layers=nb_layers,
                                       nb_filters=nb_filters,
                                       nb_dilation_factors=nb_dilation_factors,
-                                      max_look_back=nb_steps_in,
                                       nb_input_features=forecast_data.nb_input_features,
                                       nb_output_features=forecast_data.nb_output_features)
 
@@ -57,24 +55,10 @@ def main():
                 epochs=epochs,
                 batch_size=batch_size)
 
-    predicted_ts, actual_ts = wavenet.predict_historical(forecast_data=forecast_data,
-                                                         set='Validation',
-                                                         plot=True,
-                                                         num_features_display=num_top_skills)
+    predictions = wavenet.predict(period_features, period_targets, nb_steps_out=nb_steps_out)
 
 
-    y_preds = []
-    y_actuals = []
-    for i in range(20):
-        y_pred = wavenet.predict(period_features[i], nb_steps_out=nb_predict_steps_out)
-        y_preds.append(y_pred)
-        y_actuals.append(period_targets[i])
-    y_preds = np.vstack(y_preds)
-    y_actuals = np.vstack(y_actuals)
-    index = np.arange(0, y_preds.shape[0])
-    sns.lineplot(index, y_preds[:, 0].reshape(-1,), label='predicted')
-    sns.lineplot(index, y_actuals[:, 0].reshape(-1, ), label='actual')
-    plt.show()
+
     jackson_ggn_db.close()
 
 if __name__ == '__main__':
