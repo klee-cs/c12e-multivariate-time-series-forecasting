@@ -8,7 +8,7 @@ from multi_tsf.db_reader import Jackson_GGN_DB
 
 
 def main():
-    epochs = 150
+    epochs = 500
     train_size = 0.7
     val_size = 0.15
     batch_size = 64
@@ -19,6 +19,7 @@ def main():
     nb_filters = 25
     target_index = 0
     num_top_skills = 1
+    predict_hour = 6
 
     jackson_ggn_db = Jackson_GGN_DB(cache_path='./data')
     skill_ts = jackson_ggn_db.get_summed_work_items_by_skill(start_time='2017-01-31',
@@ -33,13 +34,10 @@ def main():
                                        val_size=val_size,
                                        nb_steps_in=nb_steps_in,
                                        nb_steps_out=nb_steps_out,
-                                       target_index=target_index)
+                                       target_index=target_index,
+                                       predict_hour=predict_hour,
+                                       by_timestamp=True)
 
-
-    period_dates, period_features, period_targets = forecast_data.create_predict_periods(nb_steps_in=nb_steps_in,
-                                                                                         nb_steps_out=nb_steps_out,
-                                                                                         target_index=target_index,
-                                                                                         predict_hour=7)
 
 
     ##################WaveNet######################
@@ -55,7 +53,7 @@ def main():
                 epochs=epochs,
                 batch_size=batch_size)
 
-    predictions = wavenet.predict(period_features, period_targets, nb_steps_out=nb_steps_out)
+    predictions = wavenet.predict(forecast_data)
 
 
 

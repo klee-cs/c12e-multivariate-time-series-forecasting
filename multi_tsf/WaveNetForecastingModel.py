@@ -150,13 +150,7 @@ class WaveNetForecastingModel(object):
                     except tf.errors.OutOfRangeError:
                         break
 
-            index = np.arange(0, plot_pred_y.shape[1])
-            sns.lineplot(index, plot_pred_y[0, :, 0].reshape(-1, ), label='predicted')
-            sns.lineplot(index, plot_data_y[0, :, 0].reshape(-1, ), label='actual')
-            plt.legend()
-            plt.title('Validation Set')
-            plt.show()
-
+            self.plot(plot_pred_y, plot_data_y)
             self.model_path = model_path
             self.saver.save(sess, model_path + '/' + self.name, global_step=epochs)
             self.meta_path = model_path + '/' + self.name + '-%d.meta' % epochs
@@ -164,9 +158,11 @@ class WaveNetForecastingModel(object):
 
 
     def predict(self,
-                history: np.array,
-                future: np.array,
-                nb_steps_out: int) -> np.array:
+                forecast_data: ForecastTimeSeries) -> np.array:
+        test_periods = forecast_data.periods['Test']
+        history = test_periods['features']
+        future = test_periods['targets']
+        nb_steps_out = forecast_data.nb_steps_out
         proxy_y = np.zeros((history.shape[0], history.shape[1], self.nb_output_features))
         with tf.Session() as sess:
             new_saver = tf.train.import_meta_graph(self.meta_path)
@@ -183,29 +179,43 @@ class WaveNetForecastingModel(object):
                     except tf.errors.OutOfRangeError:
                         break
                 carry = np.vstack(carries)
-                step_predictions.append(carry[:, -1, :])
-
-        predictions = np.hstack(step_predictions).flatten()
-        future = future.flatten()
-        index = np.arange(0, predictions.shape[0])
-        sns.lineplot(index[0:336], predictions[0:336], label='prediction')
-        sns.lineplot(index[0:336], future[0:336], label='future')
-        print(np.mean(np.abs(predictions-future)))
-        plt.legend()
-        plt.show()
+                step_predictions.append(np.expand_dims(carry[:, -1, :], axis=1))
+        predictions = np.concatenate(step_predictions, axis=1)
+        self.plot(predictions, future)
         return predictions
 
 
+    def plot(self, predictions, future):
+        if self.nb_output_features > 1:
+            fig, ax = plt.subplots(self.nb_output_features, 1)
+            for i in range(self.nb_output_features):
+                predictions_i = predictions[:, :, i].flatten()
+                future_i = future[:, :, i].flatten()
+                index = np.arange(0, predictions_i.shape[0])
+                sns.lineplot(index, predictions_i, label='prediction', ax=ax[i])
+                sns.lineplot(index, future_i, label='actual', ax=ax[i])
+            plt.legend()
+            plt.show()
+        else:
+            fig, ax = plt.subplots()
+            predictions = predictions.flatten()
+            future = future.flatten()
+            index = np.arange(0, predictions.shape[0])
+            sns.lineplot(index, predictions, label='prediction', ax=ax)
+            sns.lineplot(index, future, label='actual', ax=ax)
+            plt.show()
+        print(np.mean(np.abs(predictions-future)))
+
 def main():
-    epochs = 5
+    epochs = 500
     num_sinusoids = 1
     train_size = 0.7
     val_size = 0.15
-    nb_dilation_factors = [1, 2, 4, 8]
+    nb_dilation_factors = [1, 2, 4, 8, 16]
     nb_layers = len(nb_dilation_factors)
     nb_filters = 64
     nb_steps_in = 100
-    nb_steps_out = None
+    nb_steps_out = 24
     target_index = 0
 
     # Sinusoid Sample Data
@@ -222,7 +232,10 @@ def main():
                                        val_size=val_size,
                                        nb_steps_in=nb_steps_in,
                                        nb_steps_out=nb_steps_out,
-                                       target_index=target_index)
+                                       target_index=target_index,
+                                       predict_hour=7,
+                                       by_timestamp=False)
+
 
     wavenet = WaveNetForecastingModel(name='WaveNet',
                                       nb_layers=nb_layers,
@@ -236,8 +249,7 @@ def main():
                 epochs=epochs,
                 batch_size=64)
 
-    step_predictions = wavenet.predict(history=forecast_data.time_series, nb_steps_out=24)
-    print(step_predictions.shape)
+    step_predictions = wavenet.predict(forecast_data)
 
 if __name__ == '__main__':
     main()

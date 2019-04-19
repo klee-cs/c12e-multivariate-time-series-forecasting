@@ -12,39 +12,35 @@ class ForecastTimeSeries(object):
                  vector_output_mode: bool,
                  train_size: float,
                  val_size: float,
-                 nb_steps_in,
-                 nb_steps_out,
-                 target_index):
+                 nb_steps_in: int,
+                 nb_steps_out: int,
+                 target_index: Optional[int],
+                 predict_hour: int,
+                 by_timestamp: bool) -> None:
         self.vector_output_mode = vector_output_mode
         self.column_names = ts_df.columns
         self.time_series = ts_df.values
         self.dates = ts_df.index.tolist()
+        self.nb_steps_out = nb_steps_out
+        self.nb_steps_in = nb_steps_in
+        self.target_index = target_index
+        self.predict_hour = predict_hour
+        self.by_timestamp = by_timestamp
         self.features = None
         self.targets = None
-        self.nb_steps_out = None
-        self.nb_steps_in = None
         self.nb_input_features = None
         self.nb_output_features = None
-        self.period_dates = None
-        self.period_features = None
-        self.period_targets = None
         if self.vector_output_mode:
-            self._create_lags_and_target(nb_steps_in=nb_steps_in,
-                                         nb_steps_out=nb_steps_out,
-                                         target_index=target_index)
+            self._create_lags_and_target()
         else:
-            self._create_shifted_feature_targets(target_index=target_index)
+            self._create_shifted_feature_targets()
         self._split_train_validation_test(train_size=train_size,
                                           val_size=val_size)
+        self.periods = {'Train': None, 'Validation': None, 'Test': None}
+        self._create_predict_periods()
 
 
-    def _create_lags_and_target(self,
-                                nb_steps_in: int,
-                                nb_steps_out: int,
-                                target_index: int = None) -> None:
-
-        self.nb_steps_in = nb_steps_in
-        self.nb_steps_out = nb_steps_out
+    def _create_lags_and_target(self) -> None:
 
         X, y = [], []
         for i in range(self.time_series.shape[0]):
@@ -55,8 +51,8 @@ class ForecastTimeSeries(object):
             if out_end_ix > len(self.time_series):
                 break
             # gather input and output parts of the pattern
-            if target_index is not None:
-                seq_x, seq_y = self.time_series[i:end_ix, :], self.time_series[end_ix:out_end_ix, target_index]
+            if self.target_index is not None:
+                seq_x, seq_y = self.time_series[i:end_ix, :], self.time_series[end_ix:out_end_ix, self.target_index]
                 seq_y = np.expand_dims(seq_y, axis=1)
             else:
                 seq_x, seq_y = self.time_series[i:end_ix, :], self.time_series[end_ix:out_end_ix, :]
@@ -69,17 +65,14 @@ class ForecastTimeSeries(object):
         self.nb_output_features = self.features.shape[-1]
 
 
-    def _create_shifted_feature_targets(self, target_index: int) -> None:
-        if target_index is not None:
-            seq_x, seq_y = self.time_series[:-1, target_index], self.time_series[1:, target_index]
+    def _create_shifted_feature_targets(self) -> None:
+        if self.target_index is not None:
+            seq_x, seq_y = self.time_series[:-1, self.target_index], self.time_series[1:, self.target_index]
             seq_y = np.expand_dims(seq_y, axis=1)
         else:
             seq_x, seq_y = self.time_series[:-1, :], self.time_series[1:, :]
         if self.time_series.shape[-1] == 1:
             seq_x = np.expand_dims(seq_x, axis=1)
-
-        self.nb_steps_in = None
-        self.nb_steps_out = None
 
         self.features = np.expand_dims(seq_x, axis=0)
         self.targets = np.expand_dims(seq_y, axis=0)
@@ -87,65 +80,103 @@ class ForecastTimeSeries(object):
         self.nb_input_features = self.features.shape[-1]
         self.nb_output_features = self.features.shape[-1]
 
-    def create_predict_periods(self,
-                               nb_steps_in: int,
-                               nb_steps_out: int,
-                               target_index: Optional[int],
-                               predict_hour: int) -> (np.array, np.array):
-        self.period_dates = []
-        self.period_features = []
-        self.period_targets = []
+    def _create_predict_periods(self) -> (np.array, np.array):
 
-        for i in range(self.time_series.shape[0]):
-            hour = self.dates[i].hour
-            min = self.dates[i].minute
-            if hour == predict_hour and min == 0:
-                if (i - nb_steps_in) >= 0 and (i + nb_steps_out) < self.time_series.shape[0]:
-                    if target_index is None:
-                        feature = self.time_series[i - nb_steps_in:i, :]
-                        target = self.time_series[i:i + nb_steps_out, :]
-                    else:
-                        feature = self.time_series[i - nb_steps_in:i, target_index]
-                        target = self.time_series[i:i + nb_steps_out, target_index]
-                    self.period_dates.append(self.dates[i])
-                    self.period_features.append(feature)
-                    self.period_targets.append(target)
-        self.period_features =np.array(self.period_features)
-        self.period_targets = np.array(self.period_targets)
-        if self.nb_output_features == 1:
-            self.period_features = np.expand_dims(self.period_features, axis=2)
-            self.period_targets = np.expand_dims(self.period_targets, axis=2)
-        return self.period_dates, self.period_features, self.period_targets
+        train_ts = self.time_series[:self.train_cutoff]
+        train_dates = self.dates[:self.train_cutoff]
+        val_ts = self.time_series[self.train_cutoff:self.val_cutoff]
+        val_dates = self.dates[self.train_cutoff:self.val_cutoff]
+        test_ts = self.time_series[self.val_cutoff:]
+        test_dates = self.dates[self.val_cutoff:]
+
+        self.periods = {
+            'Train': {
+                'ts': train_ts,
+                'dates': train_dates,
+                'predict_dates': [],
+                'features': [],
+                'targets': []
+            },
+            'Validation': {
+                'ts': val_ts,
+                'dates': val_dates,
+                'predict_dates': [],
+                'features': [],
+                'targets': []
+            },
+            'Test': {
+                'ts': test_ts,
+                'dates': test_dates,
+                'predict_dates': [],
+                'features': [],
+                'targets': []
+            }
+        }
+
+
+        for set, data in self.periods.items():
+            if self.by_timestamp:
+                for i in range(data['ts'].shape[0]):
+                    hour = data['dates'][i].hour
+                    min = data['dates'][i].minute
+                    if hour == self.predict_hour and min == 0:
+                        if (i - self.nb_steps_in) >= 0 and (i + self.nb_steps_out) < data['ts'].shape[0]:
+                            if self.target_index is None:
+                                feature = data['ts'][i - self.nb_steps_in:i, :]
+                                target = data['ts'][i:i + self.nb_steps_out, :]
+                            else:
+                                feature = data['ts'][i - self.nb_steps_in:i, self.target_index]
+                                target = data['ts'][i:i + self.nb_steps_out, self.target_index]
+                            data['predict_dates'].append(data['dates'][i:i+self.nb_steps_out])
+                            data['features'].append(feature)
+                            data['targets'].append(target)
+            else:
+                for i in np.arange(0, data['ts'].shape[0], self.nb_steps_out):
+                    if (i - self.nb_steps_in) >= 0 and (i + self.nb_steps_out) < data['ts'].shape[0]:
+                        if self.target_index is None:
+                            feature = data['ts'][i - self.nb_steps_in:i, :]
+                            target = data['ts'][i:i + self.nb_steps_out, :]
+                        else:
+                            feature = data['ts'][i - self.nb_steps_in:i, self.target_index]
+                            target = data['ts'][i:i + self.nb_steps_out, self.target_index]
+                        data['predict_dates'].append(data['dates'][i:i + self.nb_steps_out])
+                        data['features'].append(feature)
+                        data['targets'].append(target)
+            data['features'] = np.array(data['features'])
+            data['targets'] = np.array(data['targets'])
+            if self.nb_output_features == 1:
+                data['features'] = np.expand_dims(data['features'], axis=2)
+                data['targets'] = np.expand_dims(data['targets'], axis=2)
+
 
 
     def _split_train_validation_test(self,
                                train_size: float,
                                val_size: float) -> None:
 
-        train_cutoff = math.ceil(self.time_series.shape[0] * train_size)
-        val_cutoff = math.ceil(self.time_series.shape[0] * (train_size + val_size))
+        self.train_cutoff = math.ceil(self.time_series.shape[0] * train_size)
+        self.val_cutoff = math.ceil(self.time_series.shape[0] * (train_size + val_size))
 
         if self.vector_output_mode:
-            self.train_X = self.features[:train_cutoff]
-            self.train_y = self.targets[:train_cutoff]
+            self.train_X = self.features[:self.train_cutoff]
+            self.train_y = self.targets[:self.train_cutoff]
 
-            self.val_X = self.features[train_cutoff:val_cutoff]
-            self.val_y = self.targets[train_cutoff:val_cutoff]
+            self.val_X = self.features[self.train_cutoff:self.val_cutoff]
+            self.val_y = self.targets[self.train_cutoff:self.val_cutoff]
 
-            self.test_X = self.features[val_cutoff:]
-            self.test_y = self.targets[val_cutoff:]
+            self.test_X = self.features[self.val_cutoff:]
+            self.test_y = self.targets[self.val_cutoff:]
 
         else:
-            self.train_X = self.features[:, :train_cutoff, :]
-            self.train_y = self.targets[:, :train_cutoff, :]
+            self.train_X = self.features[:, :self.train_cutoff, :]
+            self.train_y = self.targets[:, :self.train_cutoff, :]
 
-            self.val_X = self.features[:, train_cutoff:val_cutoff, :]
-            self.val_y = self.targets[:, train_cutoff:val_cutoff, :]
+            self.val_X = self.features[:, self.train_cutoff:self.val_cutoff, :]
+            self.val_y = self.targets[:, self.train_cutoff:self.val_cutoff, :]
 
-            self.test_X = self.features[:, val_cutoff:, :]
-            self.test_y = self.targets[:, val_cutoff:, :]
+            self.test_X = self.features[:, self.val_cutoff:, :]
+            self.test_y = self.targets[:, self.val_cutoff:, :]
 
-            print(self.train_X.shape)
 
 class SyntheticSinusoids(object):
 
@@ -161,7 +192,7 @@ class SyntheticSinusoids(object):
             f = np.random.uniform(int(sampling_rate//100), int(self.sampling_rate//30))
             noise_level = np.random.uniform(0.01, 0.02)
             x = self.amplitude*np.cos(2*np.pi*f/self.sampling_rate*n) \
-             + np.random.normal(loc=0.0, scale=noise_level*self.amplitude, size=n.shape[0])
+             + np.random.normal(loc=0.0, scale=noise_level*self.amplitude, size=n.shape[0]) + self.amplitude
             self.sinusoids.append(x.reshape(-1, 1))
 
         self.sinusoids = np.concatenate(self.sinusoids, axis=1)
@@ -183,8 +214,8 @@ def MAPE():
 
 
 def main():
-    nb_steps_in = 100
-    nb_steps_out = 10
+    nb_steps_in = 150
+    nb_steps_out = 34
     target_index = None
     train_size = 0.7
     val_size = 0.15
@@ -218,13 +249,6 @@ def main():
     sns.lineplot(index, lstm_sinusoid_ts.features[0, :, 0], label='predicted')
     plt.legend()
     plt.show()
-
-    period_dates, period_features, period_targets = wavenet_sinusoid_ts.create_predict_periods(nb_steps_in=nb_steps_in-1,
-                                                                                                 nb_steps_out=24,
-                                                                                                 target_index=target_index,
-                                                                                                 predict_hour=7)
-    print(period_features.shape)
-    print(period_targets.shape)
 
 
 if __name__ == '__main__':

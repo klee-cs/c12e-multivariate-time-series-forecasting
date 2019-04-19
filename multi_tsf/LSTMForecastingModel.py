@@ -6,7 +6,6 @@ import pandas as pd
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import seaborn as sns
-from multi_tsf.ForecastingModel import ForecastingModel
 from multi_tsf.time_series_utils import SyntheticSinusoids, ForecastTimeSeries
 
 class LSTMForecastingModel(object):
