@@ -43,45 +43,96 @@ class WaveNetForecastingModel(object):
 
 
     def _create_model(self, data_X: tf.Tensor, data_y: tf.Tensor) -> (tf.Tensor, tf.Tensor):
-        carry = data_X
-        skip_connection = tf.keras.layers.Conv1D(filters=self.nb_filters,
-                                                 kernel_size=1,
-                                                 padding='same',
-                                                 activation=tf.keras.activations.relu)
-        #Skip connection
-        dcc_layer1 = tf.keras.layers.Conv1D(filters=self.nb_filters,
-                                               kernel_size=2,
-                                               strides=1,
-                                               padding='causal',
-                                               dilation_rate=1,
-                                               activation=keras.activations.relu,
-                                               kernel_regularizer=tf.keras.regularizers.l2(l=0.01))
-        carry = tf.keras.layers.add([skip_connection(carry), dcc_layer1(carry)])
-        for i in range(self.nb_layers):
-            dcc_layer = tf.keras.layers.Conv1D(filters=self.nb_filters,
-                                               kernel_size=2,
-                                               strides=1,
-                                               padding='causal',
-                                               dilation_rate=self.nb_dilation_factors[i],
-                                               activation=keras.activations.relu,
-                                               kernel_regularizer=tf.keras.regularizers.l2(l=0.01))
-            #Residual Connections
-            carry = tf.keras.layers.add([dcc_layer(carry), carry])
+        #Univariate or Multivariate WaveNet
+        if self.nb_output_features == self.nb_input_features:
+            carry = data_X
+            skip_connection = tf.keras.layers.Conv1D(filters=self.nb_filters,
+                                                     kernel_size=1,
+                                                     padding='same',
+                                                     activation=tf.keras.activations.relu,
+                                                     kernel_regularizer=tf.keras.regularizers.l2(l=0.01))
+            #Skip connection
+            dcc_layer1 = tf.keras.layers.Conv1D(filters=self.nb_filters,
+                                                   kernel_size=2,
+                                                   strides=1,
+                                                   padding='causal',
+                                                   dilation_rate=1,
+                                                   activation=keras.activations.relu,
+                                                   kernel_regularizer=tf.keras.regularizers.l2(l=0.01))
+            carry = tf.keras.layers.add([skip_connection(carry), dcc_layer1(carry)])
+            for i in range(self.nb_layers):
+                dcc_layer = tf.keras.layers.Conv1D(filters=self.nb_filters,
+                                                   kernel_size=2,
+                                                   strides=1,
+                                                   padding='causal',
+                                                   dilation_rate=self.nb_dilation_factors[i],
+                                                   activation=keras.activations.relu,
+                                                   kernel_regularizer=tf.keras.regularizers.l2(l=0.01))
+                #Residual Connections
+                carry = tf.keras.layers.add([dcc_layer(carry), carry])
 
-        final_dcc_layer = tf.keras.layers.Conv1D(filters=self.nb_output_features,
-                                                 kernel_size=1,
-                                                 strides=1,
-                                                 padding='same',
-                                                 activation=keras.activations.relu,
-                                                 kernel_regularizer=tf.keras.regularizers.l2(l=0.01))
-        self.pred_y = final_dcc_layer(carry)
-        loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(self.pred_y, data_y))
-        naive_loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(data_X, data_y))
-        with tf.name_scope('Loss'):
-            tf.summary.scalar('loss', loss)
-            tf.summary.scalar('naive_loss', naive_loss)
+            final_dcc_layer = tf.keras.layers.Conv1D(filters=self.nb_output_features,
+                                                     kernel_size=1,
+                                                     strides=1,
+                                                     padding='same',
+                                                     activation=keras.activations.relu,
+                                                     kernel_regularizer=tf.keras.regularizers.l2(l=0.01))
+            self.pred_y = final_dcc_layer(carry)
+            loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(self.pred_y, data_y))
+            naive_loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(data_X, data_y))
+            with tf.name_scope('Loss'):
+                tf.summary.scalar('loss', loss)
+                tf.summary.scalar('naive_loss', naive_loss)
 
-        return loss, self.pred_y
+            return loss, self.pred_y
+
+        #Conditional WaveNet
+        elif self.nb_input_features > self.nb_output_features:
+            carry = data_X
+            carries = []
+            for i in range(self.nb_input_features):
+                carry_i = tf.expand_dims(carry[:, :, i], axis=-1)
+                # Skip connection
+                skip_connection_i = tf.keras.layers.Conv1D(filters=self.nb_filters,
+                                                         kernel_size=1,
+                                                         padding='same',
+                                                         activation=tf.keras.activations.relu,
+                                                        kernel_regularizer=tf.keras.regularizers.l2(l=0.01))
+                dcc_layer1_i = tf.keras.layers.Conv1D(filters=self.nb_filters,
+                                                    kernel_size=2,
+                                                    strides=1,
+                                                    padding='causal',
+                                                    dilation_rate=1,
+                                                    activation=keras.activations.relu,
+                                                    kernel_regularizer=tf.keras.regularizers.l2(l=0.01))
+                carry_i = tf.keras.layers.add([skip_connection_i(carry_i), dcc_layer1_i(carry_i)])
+                carries.append(carry_i)
+            carry = tf.keras.layers.add(carries)
+            for i in range(self.nb_layers):
+                dcc_layer = tf.keras.layers.Conv1D(filters=self.nb_filters,
+                                                   kernel_size=2,
+                                                   strides=1,
+                                                   padding='causal',
+                                                   dilation_rate=self.nb_dilation_factors[i],
+                                                   activation=keras.activations.relu,
+                                                   kernel_regularizer=tf.keras.regularizers.l2(l=0.01))
+                # Residual Connections
+                carry = tf.keras.layers.add([dcc_layer(carry), carry])
+
+            final_dcc_layer = tf.keras.layers.Conv1D(filters=self.nb_output_features,
+                                                     kernel_size=1,
+                                                     strides=1,
+                                                     padding='same',
+                                                     activation=keras.activations.relu,
+                                                     kernel_regularizer=tf.keras.regularizers.l2(l=0.01))
+            self.pred_y = final_dcc_layer(carry)
+            loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(self.pred_y, data_y))
+            naive_loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(data_X, data_y))
+            with tf.name_scope('Loss'):
+                tf.summary.scalar('loss', loss)
+                tf.summary.scalar('naive_loss', naive_loss)
+
+            return loss, self.pred_y
 
 
     def fit(self,
@@ -106,6 +157,7 @@ class WaveNetForecastingModel(object):
 
         self.saver = tf.train.Saver()
 
+        tf.random.set_random_seed(22943)
         with tf.Session() as sess:
             merged = tf.summary.merge_all()
             sess.run(tf.global_variables_initializer())
@@ -132,7 +184,7 @@ class WaveNetForecastingModel(object):
                             [train_op, self.loss, self.pred_y, self.data_y, merged])
                         self.train_writer.add_summary(summary, train_i)
                         train_i += 1
-                        print(loss)
+                        print(train_i, loss)
                     except tf.errors.OutOfRangeError:
                         break
 
@@ -156,8 +208,8 @@ class WaveNetForecastingModel(object):
             self.meta_path = model_path + '/' + self.name + '-%d.meta' % epochs
 
 
-
-    def predict(self,
+    #@TODO Fix Recursion
+    def evaluate(self,
                 forecast_data: ForecastTimeSeries) -> np.array:
         test_periods = forecast_data.periods['Test']
         history = test_periods['features']
@@ -171,50 +223,69 @@ class WaveNetForecastingModel(object):
             step_predictions = []
             for i in range(nb_steps_out):
                 sess.run(self.iterator.initializer, feed_dict={self.placeholder_X: carry, self.placeholder_y: proxy_y})
-                carries = []
+                next_steps = []
                 while (True):
                     try:
-                        carry = sess.run([self.pred_y])[0]
-                        carries.append(carry)
+                        next_step = sess.run([self.pred_y])[0]
+                        next_steps.append(next_step)
                     except tf.errors.OutOfRangeError:
                         break
-                carry = np.vstack(carries)
-                step_predictions.append(np.expand_dims(carry[:, -1, :], axis=1))
+                next_steps = np.expand_dims(np.vstack(next_steps)[:, -1, :], axis=1)
+                carry = np.concatenate([carry, next_steps], axis=1)
+                carry = carry[:, 1:, :]
+                step_predictions.append(next_steps)
+        dates = np.hstack(test_periods['predict_dates'])
         predictions = np.concatenate(step_predictions, axis=1)
-        self.plot(predictions, future)
+        self.plot(predictions, future, dates)
         return predictions
 
 
-    def plot(self, predictions, future):
+    def plot(self, predictions, future, dates=None):
+        nb_steps_out = future.shape[1]
         if self.nb_output_features > 1:
             fig, ax = plt.subplots(self.nb_output_features, 1)
             for i in range(self.nb_output_features):
                 predictions_i = predictions[:, :, i].flatten()
                 future_i = future[:, :, i].flatten()
-                index = np.arange(0, predictions_i.shape[0])
-                sns.lineplot(index, predictions_i, label='prediction', ax=ax[i])
-                sns.lineplot(index, future_i, label='actual', ax=ax[i])
+                if dates is None:
+                    index = np.arange(0, predictions_i.shape[0])
+                    sns.lineplot(index, predictions_i, label='prediction', ax=ax[i])
+                    sns.lineplot(index, future_i, label='actual', ax=ax[i])
+                else:
+                    sns.lineplot(dates, predictions_i, label='prediction', ax=ax[i])
+                    sns.lineplot(dates, future_i, label='actual', ax=ax[i])
+                    predict_dates = dates[0::nb_steps_out]
+                    plt.scatter(predict_dates, np.zeros(predict_dates.shape), s=50, c='r')
             plt.legend()
+            plt.grid()
             plt.show()
         else:
             fig, ax = plt.subplots()
             predictions = predictions.flatten()
             future = future.flatten()
-            index = np.arange(0, predictions.shape[0])
-            sns.lineplot(index, predictions, label='prediction', ax=ax)
-            sns.lineplot(index, future, label='actual', ax=ax)
+            if dates is None:
+                index = np.arange(0, predictions.shape[0])
+                sns.lineplot(index, predictions, label='prediction', ax=ax)
+                sns.lineplot(index, future, label='actual', ax=ax)
+            else:
+                sns.lineplot(dates, predictions, label='prediction', ax=ax)
+                sns.lineplot(dates, future, label='actual', ax=ax)
+                predict_dates = dates[0::nb_steps_out]
+                plt.scatter(predict_dates, np.zeros(predict_dates.shape), s=50, c='r')
+            plt.grid()
             plt.show()
+
         print(np.mean(np.abs(predictions-future)))
 
 def main():
-    epochs = 500
+    epochs = 250
     num_sinusoids = 1
     train_size = 0.7
     val_size = 0.15
     nb_dilation_factors = [1, 2, 4, 8, 16]
     nb_layers = len(nb_dilation_factors)
     nb_filters = 64
-    nb_steps_in = 100
+    nb_steps_in = 750
     nb_steps_out = 24
     target_index = 0
 
@@ -222,7 +293,7 @@ def main():
     synthetic_sinusoids = SyntheticSinusoids(num_sinusoids=num_sinusoids,
                                              amplitude=1,
                                              sampling_rate=5000,
-                                             length=5000)
+                                             length=50000)
 
     sinusoids = pd.DataFrame(synthetic_sinusoids.sinusoids)
 
@@ -249,7 +320,7 @@ def main():
                 epochs=epochs,
                 batch_size=64)
 
-    step_predictions = wavenet.predict(forecast_data)
+    step_predictions = wavenet.evaluate(forecast_data)
 
 if __name__ == '__main__':
     main()

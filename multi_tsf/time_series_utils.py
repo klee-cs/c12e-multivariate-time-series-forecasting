@@ -67,18 +67,17 @@ class ForecastTimeSeries(object):
 
     def _create_shifted_feature_targets(self) -> None:
         if self.target_index is not None:
-            seq_x, seq_y = self.time_series[:-1, self.target_index], self.time_series[1:, self.target_index]
-            seq_y = np.expand_dims(seq_y, axis=1)
+            seq_x, seq_y = self.time_series[:-1, :], self.time_series[1:, self.target_index]
+            seq_y = np.expand_dims(seq_y, axis=-1)
+            self.nb_input_features = self.time_series.shape[-1]
+            self.nb_output_features = 1
         else:
             seq_x, seq_y = self.time_series[:-1, :], self.time_series[1:, :]
-        if self.time_series.shape[-1] == 1:
-            seq_x = np.expand_dims(seq_x, axis=1)
+            self.nb_input_features = self.nb_output_features = self.time_series.shape[-1]
 
         self.features = np.expand_dims(seq_x, axis=0)
         self.targets = np.expand_dims(seq_y, axis=0)
 
-        self.nb_input_features = self.features.shape[-1]
-        self.nb_output_features = self.features.shape[-1]
 
     def _create_predict_periods(self) -> (np.array, np.array):
 
@@ -125,7 +124,7 @@ class ForecastTimeSeries(object):
                                 feature = data['ts'][i - self.nb_steps_in:i, :]
                                 target = data['ts'][i:i + self.nb_steps_out, :]
                             else:
-                                feature = data['ts'][i - self.nb_steps_in:i, self.target_index]
+                                feature = data['ts'][i - self.nb_steps_in:i, :]
                                 target = data['ts'][i:i + self.nb_steps_out, self.target_index]
                             data['predict_dates'].append(data['dates'][i:i+self.nb_steps_out])
                             data['features'].append(feature)
@@ -137,16 +136,18 @@ class ForecastTimeSeries(object):
                             feature = data['ts'][i - self.nb_steps_in:i, :]
                             target = data['ts'][i:i + self.nb_steps_out, :]
                         else:
-                            feature = data['ts'][i - self.nb_steps_in:i, self.target_index]
+                            feature = data['ts'][i - self.nb_steps_in:i, :]
                             target = data['ts'][i:i + self.nb_steps_out, self.target_index]
                         data['predict_dates'].append(data['dates'][i:i + self.nb_steps_out])
                         data['features'].append(feature)
                         data['targets'].append(target)
             data['features'] = np.array(data['features'])
             data['targets'] = np.array(data['targets'])
-            if self.nb_output_features == 1:
-                data['features'] = np.expand_dims(data['features'], axis=2)
-                data['targets'] = np.expand_dims(data['targets'], axis=2)
+            print(data['features'].shape)
+            print(data['targets'].shape)
+            # if self.nb_output_features == 1:
+            #     data['features'] = np.expand_dims(data['features'], axis=2)
+            #     data['targets'] = np.expand_dims(data['targets'], axis=2)
 
 
 
@@ -156,6 +157,9 @@ class ForecastTimeSeries(object):
 
         self.train_cutoff = math.ceil(self.time_series.shape[0] * train_size)
         self.val_cutoff = math.ceil(self.time_series.shape[0] * (train_size + val_size))
+
+        print(self.features.shape)
+        print(self.targets.shape)
 
         if self.vector_output_mode:
             self.train_X = self.features[:self.train_cutoff]
