@@ -31,8 +31,8 @@ class ForecastTimeSeries(object):
         self.train_df, self.val_df, self.test_df = self._split_train_validation_test(self.ts_df, self.test_cutoff_date)
 
 
-        self.nb_input_features = ts_df.shape[1]
-        if self.target_index:
+        self.nb_input_features = ts_df.shape[-1]
+        if self.target_index is not None:
             self.nb_output_features = 1
         else:
             self.nb_output_features = self.nb_input_features
@@ -139,7 +139,6 @@ class ForecastTimeSeries(object):
         if target_index is not None:
             seq_x, seq_y = time_series[:-1, :], time_series[1:, target_index]
             seq_y = np.expand_dims(seq_y, axis=-1)
-
         else:
             seq_x, seq_y = time_series[:-1, :], time_series[1:, :]
 
@@ -260,41 +259,7 @@ def generate_stats(trueY, forecastY, missing=True):
 
 
 def main():
-    nb_steps_in = 150
-    nb_steps_out = 34
-    target_index = None
-    train_size = 0.7
-    val_size = 0.15
-    synthetic_sinusoids = SyntheticSinusoids(num_sinusoids=5,
-                                             amplitude=1,
-                                             sampling_rate=5000,
-                                             length=10000)
-
-    sinusoids = pd.DataFrame(synthetic_sinusoids.sinusoids)
-    wavenet_sinusoid_ts = ForecastTimeSeries(sinusoids,
-                                             vector_output_mode=False,
-                                             train_size=train_size,
-                                             val_size=val_size,
-                                             nb_steps_in=nb_steps_in,
-                                             nb_steps_out=nb_steps_out,
-                                             target_index=target_index)
-    index = np.arange(0, 99)
-    sns.lineplot(index, wavenet_sinusoid_ts.features[0, :, 0].reshape(-1, ), label='predicted')
-    sns.lineplot(index, wavenet_sinusoid_ts.targets[0, :, 0].reshape(-1, ), label='actual')
-    plt.legend()
-    plt.show()
-    lstm_sinusoid_ts = ForecastTimeSeries(sinusoids,
-                                          vector_output_mode=True,
-                                          train_size=train_size,
-                                          val_size=val_size,
-                                          nb_steps_in=100,
-                                          nb_steps_out=5,
-                                          target_index=None)
-    index = np.arange(0, 100)
-    sns.lineplot(index, lstm_sinusoid_ts.features[0, :, 0], label='predicted')
-    plt.legend()
-    plt.show()
-
+    pass
 
 if __name__ == '__main__':
     main()

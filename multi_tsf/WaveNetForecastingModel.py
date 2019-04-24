@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import os
 import shutil
 import tensorflow as tf
@@ -6,6 +7,9 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from multi_tsf.time_series_utils import ForecastTimeSeries, generate_stats
 from typing import List
+
+
+
 
 
 class WaveNetForecastingModel(object):
@@ -246,9 +250,10 @@ class WaveNetForecastingModel(object):
                     except tf.errors.OutOfRangeError:
                         break
 
-            self.model_path = model_path
-            self.saver.save(sess, model_path + '/' + self.name, global_step=epochs)
-            self.meta_path = model_path + '/' + self.name + '-%d.meta' % epochs
+                self.model_path = model_path
+                self.saver.save(sess, model_path + '/' + self.name, global_step=epochs)
+                self.meta_path = model_path + '/' + self.name + '-%d.meta' % epochs
+        return
 
 
     def evaluate(self,
@@ -310,11 +315,12 @@ class WaveNetForecastingModel(object):
         predictions = np.concatenate(step_predictions, axis=1)[0]
         return predictions
 
-    def plot(self, predictions, future, dates):
+    def plot(self, predictions, future, dates, nb_display=5):
         nb_steps_out = future.shape[1]
         if self.nb_output_features > 1:
-            fig, ax = plt.subplots(self.nb_output_features, 1)
-            for i in range(self.nb_output_features):
+            display_channels = np.random.choice(np.arange(0, self.nb_output_features), nb_display)
+            fig, ax = plt.subplots(nb_display, 1)
+            for i in display_channels:
                 predictions_i = predictions[:, :, i].flatten()
                 future_i = future[:, :, i].flatten()
                 sns.lineplot(dates, predictions_i, label='prediction', ax=ax[i])
@@ -335,6 +341,57 @@ class WaveNetForecastingModel(object):
             ax.grid()
             plt.grid()
             plt.show()
+
+
+class CompositeWaveNetForecastingModel(object):
+    def __init__(self,
+                 nb_steps_in: int,
+                 nb_steps_out: int,
+                 predict_hour: int,
+                 conditional: bool,
+                 nb_layers: int,
+                 nb_filters: int,
+                 nb_dilation_factors: List[int]):
+        self.nb_steps_in = nb_steps_in
+        self.nb_steps_out = nb_steps_out
+        self.predict_hour = predict_hour
+        self.conditional = conditional
+        self.nb_layers = nb_layers
+        self.nb_filters = nb_filters
+        self.nb_dilation_factors = nb_dilation_factors
+        self.model_paths = {}
+
+    def fit(self,
+              ts_df: pd.DataFrame,
+              model_path: str,
+              epochs: int,
+              batch_size: int):
+        os.makedirs(model_path, exist_ok=True)
+        for idx, col in enumerate(ts_df.columns):
+            forecast_data = ForecastTimeSeries(ts_df,
+                                               vector_output_mode=False,
+                                               test_cutoff_date='2019-01-01',
+                                               nb_steps_in=self.nb_steps_in,
+                                               nb_steps_out=self.nb_steps_out,
+                                               target_index=idx,
+                                               predict_hour=self.predict_hour)
+
+            wavenet = WaveNetForecastingModel(name='WaveNet-' + col,
+                                              conditional=self.conditional,
+                                              nb_layers=self.nb_layers,
+                                              nb_filters=self.nb_filters,
+                                              nb_dilation_factors=self.nb_dilation_factors,
+                                              nb_input_features=forecast_data.nb_input_features,
+                                              nb_output_features=forecast_data.nb_output_features)
+
+
+            wavenet.fit(forecast_data=forecast_data,
+                        model_path=model_path + '/wavenet_' + col,
+                        epochs=epochs,
+                        batch_size=batch_size)
+
+            self.model_paths[col] = {'meta_path': wavenet.meta_path, 'model_path': wavenet.model_path}
+            tf.reset_default_graph()
 
 def main():
    pass
