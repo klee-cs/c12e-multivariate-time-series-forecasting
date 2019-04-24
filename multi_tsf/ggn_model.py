@@ -1,4 +1,3 @@
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -8,37 +7,35 @@ from multi_tsf.db_reader import Jackson_GGN_DB
 
 
 def main():
-    epochs = 2000
-    train_size = 0.7
-    val_size = 0.15
+    epochs = 5000
     batch_size = 128
     conditional = False
     nb_dilation_factors = [1, 2, 4, 8, 16, 32, 64]
+
     nb_layers = len(nb_dilation_factors)
     nb_steps_in = 150
     nb_steps_out = 34
     nb_filters = 16
-    target_index = 0
-    num_top_skills = 1
+    target_index = None
     predict_hour = 6
 
     jackson_ggn_db = Jackson_GGN_DB(cache_path='./data')
-    skill_ts = jackson_ggn_db.get_summed_work_items_by_skill(start_time='2017-01-31',
-                                                             end_time='2019-01-31',
+    skill_ts = jackson_ggn_db.get_summed_work_items_by_skill(start_date='2017-01-31',
+                                                             end_date='2019-01-31',
+                                                             start_hour=0,
+                                                             end_hour=24,
+                                                             include_weekend=False,
+                                                             use_default_skills=True,
                                                              from_cache=True)
 
-    most_common_skills = skill_ts.sum(axis=0).sort_values(ascending=False)
-    skill_ts = skill_ts[most_common_skills.index.tolist()[0:num_top_skills]]
+    skill_ts = pd.DataFrame(skill_ts.iloc[:, 0:5])
     forecast_data = ForecastTimeSeries(skill_ts,
                                        vector_output_mode=False,
-                                       train_size=train_size,
-                                       val_size=val_size,
+                                       test_cutoff_date='2019-01-01',
                                        nb_steps_in=nb_steps_in,
                                        nb_steps_out=nb_steps_out,
                                        target_index=target_index,
-                                       predict_hour=predict_hour,
-                                       by_timestamp=True)
-
+                                       predict_hour=predict_hour)
 
 
     ##################WaveNet######################
@@ -55,8 +52,16 @@ def main():
                 epochs=epochs,
                 batch_size=batch_size)
 
-    wavenet.evaluate(forecast_data)
+    mape, mase, rmse = wavenet.evaluate(forecast_data)
+    print(mape)
+    print(mase)
+    print(rmse)
 
+    predictions = wavenet.predict(forecast_data.reshaped_periods['Test']['features'][-1],
+                                  nb_steps_out=nb_steps_out)
+
+    pd.DataFrame(predictions).plot()
+    plt.show()
 
 
     jackson_ggn_db.close()
