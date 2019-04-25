@@ -8,10 +8,6 @@ import matplotlib.pyplot as plt
 from multi_tsf.time_series_utils import ForecastTimeSeries, generate_stats
 from typing import List
 
-
-
-
-
 class WaveNetForecastingModel(object):
 
     def __init__(self,

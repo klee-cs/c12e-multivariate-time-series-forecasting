@@ -1,6 +1,5 @@
 import pandas as pd
 import matplotlib.pyplot as plt
-import seaborn as sns
 from multi_tsf.WaveNetForecastingModel import WaveNetForecastingModel, CompositeWaveNetForecastingModel
 from multi_tsf.time_series_utils import ForecastTimeSeries
 from multi_tsf.db_reader import Jackson_GGN_DB
