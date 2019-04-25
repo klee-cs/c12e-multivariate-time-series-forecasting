@@ -1,5 +1,4 @@
 import numpy as np
-import pandas as pd
 import os
 import shutil
 import tensorflow as tf
@@ -7,6 +6,12 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from multi_tsf.time_series_utils import ForecastTimeSeries, generate_stats
 from typing import List
+from pprint import pprint
+from tqdm import tqdm
+
+BATCH_INDEX = 0
+TIME_INDEX = 1
+CHANNEL_INDEX = 2
 
 class WaveNetForecastingModel(object):
 
@@ -17,42 +22,86 @@ class WaveNetForecastingModel(object):
                  nb_filters: int,
                  nb_dilation_factors: List[int],
                  nb_input_features: int,
-                 nb_output_features: int) -> None:
+                 batch_size: int,
+                 lr: float,
+                 model_path: str,
+                 ts_names: dict) -> None:
 
+        self.ts_names = [x.replace(' ', '-') for x in ts_names]
+        self.model_json = {}
+        self.model_path = model_path
         self.name = name
         self.conditional = conditional
         self.nb_layers = nb_layers
         self.nb_filters = nb_filters
         self.nb_dilation_factors = nb_dilation_factors
-        self.nb_input_features = nb_input_features
-        self.nb_output_features = nb_output_features
-        self.placeholder_X = None
-        self.placeholder_y = None
-        self.dataset = None
-        self.iterator = None
-        self.data_X = None
-        self.data_y = None
-        self.pred_y = None
-        self.batch_size = None
-        self.loss = None
-        self.saver = None
-        self.optimizer = None
-        self.train_writer = None
-        self.test_writer = None
-        self.model_path = None
-        self.meta_path = None
+        if conditional:
+            self.nb_input_features = nb_input_features
+        else:
+            self.nb_input_features = 1
+        os.makedirs(model_path, exist_ok=True)
+        self.batch_size = batch_size
+        self.placeholder_X = tf.placeholder(tf.float32, [None, None, self.nb_input_features])
+        self.placeholder_y = tf.placeholder(tf.float32, [None, None, 1])
+        self.dataset = tf.data.Dataset.from_tensor_slices((self.placeholder_X, self.placeholder_y))
+        self.batched_dataset = self.dataset.batch(batch_size=self.batch_size)
+
+        self.iterator = self.batched_dataset.make_initializable_iterator()
+        self.data_X, self.data_y = self.iterator.get_next()
+
+        for idx, name in enumerate(self.ts_names):
+            with tf.name_scope(name):
+                with tf.variable_scope(name):
+                    loss, pred_y, summaries = self._create_model(self.data_X,
+                                                                  self.data_y,
+                                                                  conditional=self.conditional,
+                                                                  nb_filters=self.nb_filters,
+                                                                  nb_layers=self.nb_layers,
+                                                                  nb_dilation_factors=self.nb_dilation_factors,
+                                                                  nb_input_features=self.nb_input_features)
+                    optimizer = tf.train.AdamOptimizer(lr)
+                    gradients = optimizer.compute_gradients(loss)
+
+                    for gradient, variable in gradients:
+                        if gradient is None or variable is None:
+                            continue
+                        summaries.append(tf.summary.histogram("gradients/" + variable.name, gradient))
+                        summaries.append(tf.summary.histogram("variables/" + variable.name, variable))
+
+                    train_op = optimizer.minimize(loss)
 
 
-    def _create_model(self, data_X: tf.Tensor, data_y: tf.Tensor) -> (tf.Tensor, tf.Tensor):
+                    graph_elements = {
+                        'index': idx,
+                        'loss': loss,
+                        'pred_y': pred_y,
+                        'optimizer': optimizer,
+                        'train_op': train_op,
+                        'summaries': summaries
+                    }
+
+                    self.model_json[name] = graph_elements
+
+
+    def _create_model(self,
+                      data_X: tf.Tensor,
+                      data_y: tf.Tensor,
+                      conditional: bool,
+                      nb_filters: int,
+                      nb_layers: int,
+                      nb_dilation_factors: List[int],
+                      nb_input_features: int) -> (tf.Tensor, tf.Tensor):
+
         regularizer = tf.keras.regularizers.l2(l=0.01)
         initializer = tf.keras.initializers.he_normal()
         activation = tf.keras.activations.linear
         leaky_relu = tf.keras.layers.LeakyReLU()
+
         #Univariate or Multivariate WaveNet
-        if not self.conditional:
+        if not conditional:
             carry = data_X
             # Skip connection
-            skip_connection = tf.keras.layers.Conv1D(filters=self.nb_filters,
+            skip_connection = tf.keras.layers.Conv1D(filters=nb_filters,
                                                      kernel_size=1,
                                                      padding='same',
                                                      activation=activation,
@@ -62,7 +111,7 @@ class WaveNetForecastingModel(object):
 
 
 
-            dcc_layer1 = tf.keras.layers.Conv1D(filters=self.nb_filters,
+            dcc_layer1 = tf.keras.layers.Conv1D(filters=nb_filters,
                                                 kernel_size=2,
                                                 strides=1,
                                                 padding='causal',
@@ -71,185 +120,178 @@ class WaveNetForecastingModel(object):
                                                 kernel_regularizer=regularizer,
                                                 kernel_initializer=initializer,
                                                 kernel_constraint=None)
+            with tf.name_scope('Initial-Layer'):
+                carry = tf.keras.layers.add([leaky_relu(skip_connection(carry)), leaky_relu(dcc_layer1(carry))])
+            for i in range(nb_layers):
+                with tf.name_scope('Dilated-Stack'):
+                    dcc_layer = tf.keras.layers.Conv1D(filters=nb_filters,
+                                                       kernel_size=2,
+                                                       strides=1,
+                                                       padding='causal',
+                                                       dilation_rate=nb_dilation_factors[i],
+                                                       activation=activation,
+                                                       kernel_regularizer=regularizer,
+                                                       kernel_initializer=initializer,
+                                                       kernel_constraint=None)
+                    #Residual Connections
+                    carry = tf.keras.layers.add([leaky_relu(dcc_layer(carry)), carry])
 
-            carry = tf.keras.layers.add([leaky_relu(skip_connection(carry)), leaky_relu(dcc_layer1(carry))])
-            for i in range(self.nb_layers):
-                dcc_layer = tf.keras.layers.Conv1D(filters=self.nb_filters,
-                                                   kernel_size=2,
-                                                   strides=1,
-                                                   padding='causal',
-                                                   dilation_rate=self.nb_dilation_factors[i],
-                                                   activation=activation,
-                                                   kernel_regularizer=regularizer,
-                                                   kernel_initializer=initializer,
-                                                   kernel_constraint=None)
-                #Residual Connections
-                carry = tf.keras.layers.add([leaky_relu(dcc_layer(carry)), carry])
-
-            final_dcc_layer = tf.keras.layers.Conv1D(filters=self.nb_output_features,
-                                                     kernel_size=1,
-                                                     strides=1,
-                                                     padding='same',
-                                                     activation=activation,
-                                                     kernel_regularizer=regularizer,
-                                                     kernel_initializer=initializer,
-                                                     kernel_constraint=None)
-            self.pred_y = leaky_relu(final_dcc_layer(carry))
-            if self.nb_output_features > 1:
-                loss = tf.math.reduce_mean(tf.math.abs(tf.math.subtract(self.pred_y, data_y)), axis=[0, 1])
-                naive_loss = tf.math.reduce_mean(tf.math.abs(tf.math.subtract(data_X, data_y)), axis=[0, 1])
-                with tf.name_scope('Loss'):
-                    for i in range(self.nb_output_features):
-                        print(loss)
-                        tf.summary.scalar('loss%d' % i, loss[i])
-                        tf.summary.scalar('naive_loss%d' % i, naive_loss[i])
-            else:
-                loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(self.pred_y, data_y))
+            with tf.name_scope('Final-Layer'):
+                final_dcc_layer = tf.keras.layers.Conv1D(filters=1,
+                                                         kernel_size=1,
+                                                         strides=1,
+                                                         padding='same',
+                                                         activation=activation,
+                                                         kernel_regularizer=regularizer,
+                                                         kernel_initializer=initializer,
+                                                         kernel_constraint=None)
+                pred_y = leaky_relu(final_dcc_layer(carry))
+            summaries = []
+            with tf.name_scope('Loss'):
+                loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(pred_y, data_y))
                 naive_loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(data_X, data_y))
-                with tf.name_scope('Loss'):
-                    tf.summary.scalar('loss', loss)
-                    tf.summary.scalar('naive_loss', naive_loss)
+                summaries.append(tf.summary.scalar('loss', loss))
+                summaries.append(tf.summary.scalar('naive_loss', naive_loss))
 
-            return loss, self.pred_y
+            return loss, pred_y, summaries
 
         #Conditional WaveNet
-        elif self.conditional:
+        elif conditional:
             carry = data_X
             carries = []
-            for i in range(self.nb_input_features):
-                carry_i = tf.expand_dims(carry[:, :, i], axis=-1)
-                # Skip connection
-                skip_connection_i = tf.keras.layers.Conv1D(filters=self.nb_filters,
-                                                           kernel_size=1,
-                                                           padding='same',
-                                                           activation=activation,
-                                                           kernel_regularizer=regularizer,
-                                                           kernel_initializer=initializer)
-                dcc_layer1_i = tf.keras.layers.Conv1D(filters=self.nb_filters,
-                                                      kernel_size=2,
-                                                      strides=1,
-                                                      padding='causal',
-                                                      dilation_rate=1,
-                                                      activation=activation,
-                                                      kernel_regularizer=regularizer,
-                                                      kernel_initializer=initializer)
-                carry_i = tf.keras.layers.add([leaky_relu(skip_connection_i(carry_i)), leaky_relu(dcc_layer1_i(carry_i))])
+            for i in range(nb_input_features):
+                with tf.name_scope('Conditional-skip-connections'):
+                    carry_i = tf.expand_dims(carry[:, :, i], axis=-1)
+                    # Skip connection
+                    skip_connection_i = tf.keras.layers.Conv1D(filters=nb_filters,
+                                                               kernel_size=1,
+                                                               padding='same',
+                                                               activation=activation,
+                                                               kernel_regularizer=regularizer,
+                                                               kernel_initializer=initializer)
+                    dcc_layer1_i = tf.keras.layers.Conv1D(filters=nb_filters,
+                                                          kernel_size=2,
+                                                          strides=1,
+                                                          padding='causal',
+                                                          dilation_rate=1,
+                                                          activation=activation,
+                                                          kernel_regularizer=regularizer,
+                                                          kernel_initializer=initializer)
+                    carry_i = tf.keras.layers.add([leaky_relu(skip_connection_i(carry_i)), leaky_relu(dcc_layer1_i(carry_i))])
                 carries.append(carry_i)
             carry = tf.keras.layers.add(carries)
-            for i in range(self.nb_layers):
-                dcc_layer = tf.keras.layers.Conv1D(filters=self.nb_filters,
-                                                   kernel_size=2,
-                                                   strides=1,
-                                                   padding='causal',
-                                                   dilation_rate=self.nb_dilation_factors[i],
-                                                   activation=activation,
-                                                   kernel_regularizer=regularizer,
-                                                   kernel_initializer=initializer)
-                # Residual Connections
-                carry = tf.keras.layers.add([leaky_relu(dcc_layer(carry)), carry])
+            for i in range(nb_layers):
+                with tf.name_scope('Dilated-Stack'):
+                    dcc_layer = tf.keras.layers.Conv1D(filters=nb_filters,
+                                                       kernel_size=2,
+                                                       strides=1,
+                                                       padding='causal',
+                                                       dilation_rate=nb_dilation_factors[i],
+                                                       activation=activation,
+                                                       kernel_regularizer=regularizer,
+                                                       kernel_initializer=initializer)
+                    # Residual Connections
+                    carry = tf.keras.layers.add([leaky_relu(dcc_layer(carry)), carry])
+            with tf.name_scope('Final-Layer'):
+                final_dcc_layer = tf.keras.layers.Conv1D(filters=1,
+                                                         kernel_size=1,
+                                                         strides=1,
+                                                         padding='same',
+                                                         activation=activation,
+                                                         kernel_regularizer=regularizer,
+                                                         kernel_initializer=initializer)
 
-            final_dcc_layer = tf.keras.layers.Conv1D(filters=self.nb_output_features,
-                                                     kernel_size=1,
-                                                     strides=1,
-                                                     padding='same',
-                                                     activation=activation,
-                                                     kernel_regularizer=regularizer,
-                                                     kernel_initializer=initializer)
+                pred_y = leaky_relu(final_dcc_layer(carry))
 
-            self.pred_y = leaky_relu(final_dcc_layer(carry))
-            if self.nb_output_features > 1:
-                loss = tf.math.reduce_mean(tf.math.abs(tf.math.subtract(self.pred_y, data_y)), axis=[0, 1])
-                naive_loss = tf.math.reduce_mean(tf.math.abs(tf.math.subtract(data_X, data_y)), axis=[0, 1])
-                with tf.name_scope('Loss'):
-                    for i in range(self.nb_output_features):
-                        print(loss)
-                        tf.summary.scalar('loss%d' % i, loss[i])
-                        tf.summary.scalar('naive_loss%d' % i, naive_loss[i])
-            else:
-                loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(self.pred_y, data_y))
+            summaries = []
+            with tf.name_scope('Loss'):
+                loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(pred_y, data_y))
                 naive_loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(data_X, data_y))
-                with tf.name_scope('Loss'):
-                    tf.summary.scalar('loss', loss)
-                    tf.summary.scalar('naive_loss', naive_loss)
+                summaries.append(tf.summary.scalar('loss', loss))
+                summaries.append(tf.summary.scalar('naive_loss', naive_loss))
 
-
-            return loss, self.pred_y
+            return loss, pred_y, summaries
 
 
     def fit(self,
             forecast_data: ForecastTimeSeries,
-            model_path: str,
-            epochs: int,
-            batch_size: int,
-            lr: float = 1e-3):
-        os.makedirs(model_path, exist_ok=True)
-        self.batch_size = batch_size
-        self.placeholder_X = tf.placeholder(tf.float32, [None, None, self.nb_input_features])
-        self.placeholder_y = tf.placeholder(tf.float32, [None, None, self.nb_output_features])
-        self.dataset = tf.data.Dataset.from_tensor_slices((self.placeholder_X, self.placeholder_y))
-        self.batched_dataset = self.dataset.batch(batch_size=self.batch_size)
+            epochs: int):
 
-        self.iterator = self.batched_dataset.make_initializable_iterator()
-        self.data_X, self.data_y = self.iterator.get_next()
-        self.loss, self.pred_y = self._create_model(self.data_X, self.data_y)
-
-        self.optimizer = tf.train.AdamOptimizer(lr)
-        gradients = self.optimizer.compute_gradients(self.loss)
-
-        for gradient, variable in gradients:
-            if gradient is None or variable is None:
-                continue
-            tf.summary.histogram("gradients/" + variable.name, gradient)
-            tf.summary.histogram("variables/" + variable.name, variable)
-
-        train_op = self.optimizer.minimize(self.loss)
+        try:
+            shutil.rmtree(self.model_path)
+            shutil.rmtree(self.model_path)
+        except FileNotFoundError as fnf_error:
+            pass
+        tf.random.set_random_seed(22943)
 
         self.saver = tf.train.Saver()
-
-        tf.random.set_random_seed(22943)
         with tf.Session() as sess:
-            merged = tf.summary.merge_all()
-            sess.run(tf.global_variables_initializer())
-            try:
-                shutil.rmtree(model_path + '/logs/train')
-                shutil.rmtree(model_path + '/logs/test')
-            except FileNotFoundError as fnf_error:
-                pass
-            self.train_writer = tf.summary.FileWriter(model_path + '/logs/train', sess.graph)
-            self.test_writer = tf.summary.FileWriter(model_path + '/logs/test')
+            # sess.run(tf.global_variables_initializer())
+            pprint(self.model_json)
 
-            train_i = 0
-            val_i = 0
+            for name, graph_elements in self.model_json.items():
+                print(name)
+                sess.run(tf.variables_initializer(tf.global_variables(scope=name)))
+                x = sess.run(tf.report_uninitialized_variables())
 
-            for _ in range(epochs):
-                sess.run(self.iterator.initializer,
-                         feed_dict={self.placeholder_X: forecast_data.reshaped_rolling['Train']['features'],
-                                    self.placeholder_y: forecast_data.reshaped_rolling['Train']['targets']})
-                while (True):
-                    try:
-                        _, loss, pred_y, data_y, summary = sess.run([train_op, self.loss, self.pred_y, self.data_y, merged])
-                        self.train_writer.add_summary(summary, train_i)
-                        train_i += 1
-                        print(train_i, loss)
-                    except tf.errors.OutOfRangeError:
-                        break
+                train_writer = tf.summary.FileWriter(self.model_path + '/logs/' + name + '/train', sess.graph)
+                test_writer = tf.summary.FileWriter(self.model_path + '/logs/' + name + '/test')
 
-                sess.run(self.iterator.initializer,
-                         feed_dict={self.placeholder_X: forecast_data.reshaped_rolling['Validation']['features'],
-                                    self.placeholder_y: forecast_data.reshaped_rolling['Validation']['targets']})
+                train_i = 0
+                val_i = 0
 
-                while (True):
-                    try:
-                        loss, pred_y, data_y, summary = sess.run([self.loss, self.pred_y, self.data_y, merged])
-                        self.test_writer.add_summary(summary, val_i)
-                        val_i += 1
-                    except tf.errors.OutOfRangeError:
-                        break
+                train_op = self.model_json[name]['train_op']
+                loss = self.model_json[name]['loss']
+                pred_y = self.model_json[name]['pred_y']
+                target_idx = self.model_json[name]['index']
+                summaries = self.model_json[name]['summaries']
+                merged = tf.summary.merge(summaries)
 
-                self.model_path = model_path
-                self.saver.save(sess, model_path + '/' + self.name, global_step=epochs)
-                self.meta_path = model_path + '/' + self.name + '-%d.meta' % epochs
-        return
+                if self.conditional:
+                    train_X = forecast_data.reshaped_rolling['Train']['features']
+                else:
+                    train_X = forecast_data.reshaped_rolling['Train']['features'][:, :, target_idx]
+                    train_X = np.expand_dims(train_X, axis=CHANNEL_INDEX)
+                train_y = forecast_data.reshaped_rolling['Train']['targets'][:, :, target_idx]
+                train_y = np.expand_dims(train_y, axis=CHANNEL_INDEX)
+
+                if self.conditional:
+                    val_X = forecast_data.reshaped_rolling['Validation']['features']
+                else:
+                    val_X = forecast_data.reshaped_rolling['Validation']['features'][:, :, target_idx]
+                    val_X = np.expand_dims(val_X, axis=CHANNEL_INDEX)
+                val_y = forecast_data.reshaped_rolling['Validation']['targets'][:, :, target_idx]
+                val_y = np.expand_dims(val_y, axis=CHANNEL_INDEX)
+
+
+                for _ in tqdm(range(epochs)):
+                    sess.run(self.iterator.initializer,
+                             feed_dict={self.placeholder_X: train_X,
+                                        self.placeholder_y: train_y})
+                    while (True):
+                        try:
+                            _, eloss, epred_y, edata_y, esummary = sess.run([train_op, loss, pred_y, self.data_y, merged])
+                            train_writer.add_summary(esummary, train_i)
+                            train_i += 1
+                        except tf.errors.OutOfRangeError:
+                            break
+
+                    sess.run(self.iterator.initializer,
+                             feed_dict={self.placeholder_X: val_X,
+                                        self.placeholder_y: val_y})
+
+                    while (True):
+                        try:
+                            eloss, epred_y, edata_y, esummary = sess.run([loss, pred_y, self.data_y, merged])
+                            test_writer.add_summary(esummary, val_i)
+                            val_i += 1
+                        except tf.errors.OutOfRangeError:
+                            break
+
+
+            self.saver.save(sess, self.model_path + '/' + self.name, global_step=epochs)
+            self.meta_path = self.model_path + '/' + self.name + '-%d.meta' % epochs
+
 
 
     def evaluate(self,
@@ -337,57 +379,6 @@ class WaveNetForecastingModel(object):
             ax.grid()
             plt.grid()
             plt.show()
-
-
-class CompositeWaveNetForecastingModel(object):
-    def __init__(self,
-                 nb_steps_in: int,
-                 nb_steps_out: int,
-                 predict_hour: int,
-                 conditional: bool,
-                 nb_layers: int,
-                 nb_filters: int,
-                 nb_dilation_factors: List[int]):
-        self.nb_steps_in = nb_steps_in
-        self.nb_steps_out = nb_steps_out
-        self.predict_hour = predict_hour
-        self.conditional = conditional
-        self.nb_layers = nb_layers
-        self.nb_filters = nb_filters
-        self.nb_dilation_factors = nb_dilation_factors
-        self.model_paths = {}
-
-    def fit(self,
-              ts_df: pd.DataFrame,
-              model_path: str,
-              epochs: int,
-              batch_size: int):
-        os.makedirs(model_path, exist_ok=True)
-        for idx, col in enumerate(ts_df.columns):
-            forecast_data = ForecastTimeSeries(ts_df,
-                                               vector_output_mode=False,
-                                               test_cutoff_date='2019-01-01',
-                                               nb_steps_in=self.nb_steps_in,
-                                               nb_steps_out=self.nb_steps_out,
-                                               target_index=idx,
-                                               predict_hour=self.predict_hour)
-
-            wavenet = WaveNetForecastingModel(name='WaveNet-' + col,
-                                              conditional=self.conditional,
-                                              nb_layers=self.nb_layers,
-                                              nb_filters=self.nb_filters,
-                                              nb_dilation_factors=self.nb_dilation_factors,
-                                              nb_input_features=forecast_data.nb_input_features,
-                                              nb_output_features=forecast_data.nb_output_features)
-
-
-            wavenet.fit(forecast_data=forecast_data,
-                        model_path=model_path + '/wavenet_' + col,
-                        epochs=epochs,
-                        batch_size=batch_size)
-
-            self.model_paths[col] = {'meta_path': wavenet.meta_path, 'model_path': wavenet.model_path}
-            tf.reset_default_graph()
 
 def main():
    pass

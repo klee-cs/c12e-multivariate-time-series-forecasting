@@ -14,7 +14,6 @@ class ForecastTimeSeries(object):
                  test_cutoff_date: str,
                  nb_steps_in: int,
                  nb_steps_out: int,
-                 target_index: Optional[int],
                  predict_hour: int) -> None:
         self.ts_df = ts_df
         self.vector_output_mode = vector_output_mode
@@ -24,7 +23,6 @@ class ForecastTimeSeries(object):
         self.dates = ts_df.index.tolist()
         self.nb_steps_out = nb_steps_out
         self.nb_steps_in = nb_steps_in
-        self.target_index = target_index
         self.predict_hour = predict_hour
 
 
@@ -32,10 +30,7 @@ class ForecastTimeSeries(object):
 
 
         self.nb_input_features = ts_df.shape[-1]
-        if self.target_index is not None:
-            self.nb_output_features = 1
-        else:
-            self.nb_output_features = self.nb_input_features
+        self.nb_output_features = 1
         self.reshaped_rolling = {'Train':
                                       {
                                           'features': None,
@@ -77,32 +72,29 @@ class ForecastTimeSeries(object):
             self._create_lags_and_target()
         else:
             self.reshaped_rolling['Train']['features'], \
-            self.reshaped_rolling['Train']['targets'] = self._create_shifted_feature_targets(self.train_df, target_index)
+            self.reshaped_rolling['Train']['targets'] = self._create_shifted_feature_targets(self.train_df)
             self.reshaped_rolling['Validation']['features'], \
-            self.reshaped_rolling['Validation']['targets'] = self._create_shifted_feature_targets(self.val_df, target_index)
+            self.reshaped_rolling['Validation']['targets'] = self._create_shifted_feature_targets(self.val_df)
             self.reshaped_rolling['Test']['features'], \
-            self.reshaped_rolling['Test']['targets'] = self._create_shifted_feature_targets(self.test_df, target_index)
+            self.reshaped_rolling['Test']['targets'] = self._create_shifted_feature_targets(self.test_df)
 
             self.reshaped_periods['Train']['features'], \
             self.reshaped_periods['Train']['targets'], \
             self.reshaped_periods['Train']['dates'] = self._create_predict_periods(self.train_df,
                                                                                    nb_steps_out,
                                                                                    nb_steps_in,
-                                                                                   target_index,
                                                                                    predict_hour)
             self.reshaped_periods['Validation']['features'], \
             self.reshaped_periods['Validation']['targets'], \
             self.reshaped_periods['Validation']['dates'] = self._create_predict_periods(self.val_df,
                                                                                         nb_steps_out,
                                                                                         nb_steps_in,
-                                                                                        target_index,
                                                                                         predict_hour)
             self.reshaped_periods['Test']['features'], \
             self.reshaped_periods['Test']['targets'], \
             self.reshaped_periods['Test']['dates'] = self._create_predict_periods(self.test_df,
                                                                                   nb_steps_out,
                                                                                   nb_steps_in,
-                                                                                  target_index,
                                                                                   predict_hour)
 
 
@@ -118,11 +110,8 @@ class ForecastTimeSeries(object):
             if out_end_ix > len(self.time_series):
                 break
             # gather input and output parts of the pattern
-            if self.target_index is not None:
-                seq_x, seq_y = self.time_series[i:end_ix, :], self.time_series[end_ix:out_end_ix, self.target_index]
-                seq_y = np.expand_dims(seq_y, axis=1)
-            else:
-                seq_x, seq_y = self.time_series[i:end_ix, :], self.time_series[end_ix:out_end_ix, :]
+
+            seq_x, seq_y = self.time_series[i:end_ix, :], self.time_series[end_ix:out_end_ix, :]
             X.append(seq_x)
             y.append(seq_y)
 
@@ -133,14 +122,10 @@ class ForecastTimeSeries(object):
 
 
     def _create_shifted_feature_targets(self,
-                                        ts_df: pd.DataFrame,
-                                        target_index: int,) -> (np.array, np.array):
+                                        ts_df: pd.DataFrame) -> (np.array, np.array):
         time_series = ts_df.values
-        if target_index is not None:
-            seq_x, seq_y = time_series[:-1, :], time_series[1:, target_index]
-            seq_y = np.expand_dims(seq_y, axis=-1)
-        else:
-            seq_x, seq_y = time_series[:-1, :], time_series[1:, :]
+
+        seq_x, seq_y = time_series[:-1, :], time_series[1:, :]
 
         #Expand for batch dimension = 1
         features = np.expand_dims(seq_x, axis=0)
@@ -152,7 +137,6 @@ class ForecastTimeSeries(object):
                                 ts_df: pd.DataFrame,
                                 nb_steps_out: int,
                                 nb_steps_in: int,
-                                target_index: int,
                                 predict_hour: int) -> (np.array, np.array):
 
         time_series = ts_df.values
@@ -165,18 +149,12 @@ class ForecastTimeSeries(object):
             min = date_times[i].minute
             if hour == predict_hour and min == 0:
                 if (i - nb_steps_in) >= 0 and (i + nb_steps_out) < ts_df.shape[0]:
-                    if target_index is None:
-                        feature = time_series[i - nb_steps_in:i, :]
-                        target = time_series[i:i + nb_steps_out, :]
-                    else:
-                        feature = time_series[i - nb_steps_in:i, :]
-                        target = time_series[i:i + nb_steps_out, target_index]
+
+                    feature = time_series[i - nb_steps_in:i, :]
+                    target = time_series[i:i + nb_steps_out, :]
                     features.append(feature)
                     targets.append(target)
                     dts += date_times[i:i + nb_steps_out]
-
-        if target_index is not None:
-            targets = np.expand_dims(targets, axis=2)
 
         features = np.array(features)
         targets = np.array(targets)
