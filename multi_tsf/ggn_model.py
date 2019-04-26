@@ -1,5 +1,4 @@
 import pandas as pd
-import matplotlib.pyplot as plt
 from multi_tsf.WaveNetForecastingModel import WaveNetForecastingModel
 from multi_tsf.time_series_utils import ForecastTimeSeries
 from multi_tsf.db_reader import Jackson_GGN_DB
@@ -8,7 +7,7 @@ from multi_tsf.db_reader import Jackson_GGN_DB
 def main():
     epochs = 1000
     batch_size = 1
-    conditional = False
+    conditional = True
     nb_dilation_factors = [1, 2, 4, 8, 16, 32, 64]
     nb_layers = len(nb_dilation_factors)
     nb_filters = 16
@@ -26,7 +25,7 @@ def main():
                                                              from_cache=True)
 
 
-    # skill_ts = pd.DataFrame(skill_ts.iloc[:, 0:5])
+    skill_ts = pd.DataFrame(skill_ts.iloc[:, 0:3])
     nb_input_features = skill_ts.shape[1]
     forecast_data = ForecastTimeSeries(skill_ts,
                                        vector_output_mode=False,
@@ -48,6 +47,7 @@ def main():
                                       ts_names = skill_ts.columns.to_list())
 
     wavenet.fit(forecast_data, epochs=epochs)
+    wavenet.evaluate(forecast_data)
 
     jackson_ggn_db.close()
 

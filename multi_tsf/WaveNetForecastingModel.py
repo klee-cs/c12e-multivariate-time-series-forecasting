@@ -226,13 +226,11 @@ class WaveNetForecastingModel(object):
 
         self.saver = tf.train.Saver()
         with tf.Session() as sess:
-            # sess.run(tf.global_variables_initializer())
             pprint(self.model_json)
 
             for name, graph_elements in self.model_json.items():
                 print(name)
                 sess.run(tf.variables_initializer(tf.global_variables(scope=name)))
-                x = sess.run(tf.report_uninitialized_variables())
 
                 train_writer = tf.summary.FileWriter(self.model_path + '/logs/' + name + '/train', sess.graph)
                 test_writer = tf.summary.FileWriter(self.model_path + '/logs/' + name + '/test')
@@ -296,35 +294,82 @@ class WaveNetForecastingModel(object):
 
     def evaluate(self,
                 forecast_data: ForecastTimeSeries) -> np.array:
-        test_periods = forecast_data.reshaped_periods['Test']
-        history = test_periods['features']
-        future = test_periods['targets']
-        dates = test_periods['dates']
         nb_steps_out = forecast_data.nb_steps_out
-        proxy_y = np.zeros((history.shape[0], history.shape[1], self.nb_output_features))
-        with tf.Session() as sess:
-            new_saver = tf.train.import_meta_graph(self.meta_path)
-            new_saver.restore(sess, tf.train.latest_checkpoint(self.model_path))
-            carry = history
-            step_predictions = []
-            for i in range(nb_steps_out):
-                sess.run(self.iterator.initializer, feed_dict={self.placeholder_X: carry, self.placeholder_y: proxy_y})
-                next_steps = []
-                while (True):
-                    try:
-                        next_step = sess.run([self.pred_y])[0]
-                        next_steps.append(next_step)
-                    except tf.errors.OutOfRangeError:
-                        break
-                next_steps = np.expand_dims(np.vstack(next_steps)[:, -1, :], axis=1)
-                carry = np.concatenate([carry, next_steps], axis=1)
-                carry = carry[:, 1:, :]
-                step_predictions.append(next_steps)
-        dates = np.hstack(dates)
-        predictions = np.concatenate(step_predictions, axis=1)
-        self.plot(predictions, future, dates)
-        mape, mase, rmse = generate_stats(predictions, future)
-        return mape, mase, rmse
+        test_periods = forecast_data.reshaped_periods['Test']
+
+        if self.conditional:
+            with tf.Session() as sess:
+                new_saver = tf.train.import_meta_graph(self.meta_path)
+                new_saver.restore(sess, tf.train.latest_checkpoint(self.model_path))
+                predictions = np.zeros((test_periods['targets'].shape[BATCH_INDEX],
+                                        test_periods['targets'].shape[TIME_INDEX],
+                                        self.nb_input_features))
+                test_X = test_periods['features']
+                future = test_periods['targets']
+                dates = np.array(test_periods['dates'])
+                carry = test_X
+                for i in range(nb_steps_out):
+                    for name, graph_elements in self.model_json.items():
+                        pred_y = self.model_json[name]['pred_y']
+                        target_idx = self.model_json[name]['index']
+
+                        proxy_y = np.zeros((carry.shape[BATCH_INDEX], carry.shape[TIME_INDEX], 1))
+
+
+                        sess.run(self.iterator.initializer,
+                                 feed_dict={self.placeholder_X: carry, self.placeholder_y: proxy_y})
+                        next_steps = []
+                        while (True):
+                            try:
+                                next_step = sess.run([pred_y])[0]
+                                next_steps.append(next_step)
+                            except tf.errors.OutOfRangeError:
+                                break
+                        next_steps = np.expand_dims(np.vstack(next_steps)[:, -1, :], axis=TIME_INDEX)
+                        predictions[:, i, target_idx] = next_steps.flatten()
+
+                    predict_i = np.expand_dims(predictions[:, i, :], axis=TIME_INDEX)
+                    carry = np.concatenate([carry, predict_i], axis=TIME_INDEX)
+                    carry = carry[:, 1:, :]
+            self.plot(predictions[:, :, 0], future[:, :, 0], dates)
+            return predictions, future, dates
+
+
+        else:
+            with tf.Session() as sess:
+                new_saver = tf.train.import_meta_graph(self.meta_path)
+                new_saver.restore(sess, tf.train.latest_checkpoint(self.model_path))
+                for name, graph_elements in self.model_json.items():
+                    pred_y = self.model_json[name]['pred_y']
+                    target_idx = self.model_json[name]['index']
+
+                    test_X = test_periods['features'][:, :, target_idx]
+                    test_X = np.expand_dims(test_X, axis=CHANNEL_INDEX)
+                    test_y = test_periods['targets'][:, :, target_idx]
+                    test_y = np.expand_dims(test_y, axis=CHANNEL_INDEX)
+                    proxy_y = np.zeros((test_X.shape[BATCH_INDEX], test_X.shape[TIME_INDEX], 1))
+                    dates = test_periods['dates']
+                    carry = test_X
+                    step_predictions = []
+                    for i in range(nb_steps_out):
+                        sess.run(self.iterator.initializer, feed_dict={self.placeholder_X: carry, self.placeholder_y: proxy_y})
+                        next_steps = []
+                        while (True):
+                            try:
+                                next_step = sess.run([pred_y])[0]
+                                next_steps.append(next_step)
+                            except tf.errors.OutOfRangeError:
+                                break
+                        next_steps = np.expand_dims(np.vstack(next_steps)[:, -1, :], axis=TIME_INDEX)
+                        step_predictions.append(next_steps)
+                        carry = np.concatenate([carry, next_steps], axis=TIME_INDEX)
+                        carry = carry[:, 1:, :]
+
+                    dates = np.hstack(dates)
+                    predictions = np.concatenate(step_predictions, axis=TIME_INDEX)
+                    self.plot(predictions, test_y, dates)
+                    mape, mase, rmse = generate_stats(predictions, test_y)
+
 
 
     def predict(self,
@@ -354,31 +399,17 @@ class WaveNetForecastingModel(object):
         return predictions
 
     def plot(self, predictions, future, dates, nb_display=5):
-        nb_steps_out = future.shape[1]
-        if self.nb_output_features > 1:
-            display_channels = np.random.choice(np.arange(0, self.nb_output_features), nb_display)
-            fig, ax = plt.subplots(nb_display, 1)
-            for i in display_channels:
-                predictions_i = predictions[:, :, i].flatten()
-                future_i = future[:, :, i].flatten()
-                sns.lineplot(dates, predictions_i, label='prediction', ax=ax[i])
-                sns.lineplot(dates, future_i, label='actual', ax=ax[i])
-                predict_dates = dates[0::nb_steps_out]
-                ax[i].scatter(predict_dates, np.zeros(predict_dates.shape), s=50, c='r')
-                ax[i].grid()
-            plt.legend()
-            plt.show()
-        else:
-            fig, ax = plt.subplots()
-            predictions = predictions.flatten()
-            future = future.flatten()
-            sns.lineplot(dates, predictions, label='prediction', ax=ax)
-            sns.lineplot(dates, future, label='actual', ax=ax)
-            predict_dates = dates[0::nb_steps_out]
-            ax.scatter(predict_dates, np.zeros(predict_dates.shape), s=50, c='r')
-            ax.grid()
-            plt.grid()
-            plt.show()
+        nb_steps_out = future.shape[TIME_INDEX]
+        fig, ax = plt.subplots()
+        predictions = predictions.flatten()
+        future = future.flatten()
+        sns.lineplot(dates, predictions, label='prediction', ax=ax)
+        sns.lineplot(dates, future, label='actual', ax=ax)
+        predict_dates = dates[0::nb_steps_out]
+        ax.scatter(predict_dates, np.zeros(predict_dates.shape), s=30, c='r')
+        ax.grid()
+        plt.grid()
+        plt.show()
 
 def main():
    pass
