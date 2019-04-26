@@ -5,10 +5,10 @@ from multi_tsf.db_reader import Jackson_GGN_DB
 
 
 def main():
-    epochs = 1
+    epochs = 3000
     batch_size = 128
     conditional = True
-    nb_dilation_factors = [1, 2, 4, 8, 16, 32, 64]
+    nb_dilation_factors = [1, 2, 4, 8, 16, 32, 64, 128]
     nb_layers = len(nb_dilation_factors)
     nb_filters = 16
     nb_steps_in = 336

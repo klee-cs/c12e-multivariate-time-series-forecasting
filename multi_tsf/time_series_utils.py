@@ -73,8 +73,10 @@ class ForecastTimeSeries(object):
         else:
             self.reshaped_rolling['Train']['features'], \
             self.reshaped_rolling['Train']['targets'] = self._create_shifted_feature_targets(self.train_df)
+
             self.reshaped_rolling['Validation']['features'], \
             self.reshaped_rolling['Validation']['targets'] = self._create_shifted_feature_targets(self.val_df)
+
             self.reshaped_rolling['Test']['features'], \
             self.reshaped_rolling['Test']['targets'] = self._create_shifted_feature_targets(self.test_df)
 

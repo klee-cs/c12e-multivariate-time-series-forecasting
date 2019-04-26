@@ -433,9 +433,3 @@ class WaveNetForecastingModel(object):
         plt.grid()
         plt.show()
 
-def main():
-   pass
-
-
-if __name__ == '__main__':
-    main()
