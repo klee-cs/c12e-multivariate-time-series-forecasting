@@ -1,10 +1,11 @@
 import numpy as np
+import pandas as pd
 import os
 import shutil
 import tensorflow as tf
 import seaborn as sns
 import matplotlib.pyplot as plt
-from multi_tsf.time_series_utils import ForecastTimeSeries, generate_stats
+from multi_tsf.time_series_utils import ForecastTimeSeries
 from typing import List
 from pprint import pprint
 from tqdm import tqdm
@@ -226,8 +227,6 @@ class WaveNetForecastingModel(object):
 
         self.saver = tf.train.Saver()
         with tf.Session() as sess:
-            pprint(self.model_json)
-
             for name, graph_elements in self.model_json.items():
                 print(name)
                 sess.run(tf.variables_initializer(tf.global_variables(scope=name)))
@@ -293,9 +292,10 @@ class WaveNetForecastingModel(object):
 
 
     def evaluate(self,
-                forecast_data: ForecastTimeSeries) -> np.array:
+                 forecast_data: ForecastTimeSeries,
+                 set: str) -> np.array:
         nb_steps_out = forecast_data.nb_steps_out
-        test_periods = forecast_data.reshaped_periods['Test']
+        test_periods = forecast_data.reshaped_periods[set]
 
         if self.conditional:
             with tf.Session() as sess:
@@ -303,7 +303,7 @@ class WaveNetForecastingModel(object):
                 new_saver.restore(sess, tf.train.latest_checkpoint(self.model_path))
                 predictions = np.zeros((test_periods['targets'].shape[BATCH_INDEX],
                                         test_periods['targets'].shape[TIME_INDEX],
-                                        self.nb_input_features))
+                                        test_periods['targets'].shape[CHANNEL_INDEX]))
                 test_X = test_periods['features']
                 future = test_periods['targets']
                 dates = np.array(test_periods['dates'])
@@ -331,24 +331,40 @@ class WaveNetForecastingModel(object):
                     predict_i = np.expand_dims(predictions[:, i, :], axis=TIME_INDEX)
                     carry = np.concatenate([carry, predict_i], axis=TIME_INDEX)
                     carry = carry[:, 1:, :]
-            self.plot(predictions[:, :, 0], future[:, :, 0], dates)
-            return predictions, future, dates
+
+            result_dict = {}
+            for idx, name in enumerate(self.ts_names):
+                result_dict[name] = {
+                    'prediction': predictions[:, :, idx].flatten(),
+                    'actual': future[:, :, idx].flatten()
+                }
+
+            results_df = pd.DataFrame.from_dict(result_dict)
+            results_df.index = dates
+            results_df.T.to_csv(self.model_path + '/results_df.csv', index_label=['first', 'second'])
+
+
+
+            return results_df
 
 
         else:
             with tf.Session() as sess:
                 new_saver = tf.train.import_meta_graph(self.meta_path)
                 new_saver.restore(sess, tf.train.latest_checkpoint(self.model_path))
+                predictions = np.zeros((test_periods['targets'].shape[BATCH_INDEX],
+                                        test_periods['targets'].shape[TIME_INDEX],
+                                        test_periods['features'].shape[CHANNEL_INDEX]))
+                future = test_periods['targets']
+                dates = np.array(test_periods['dates'])
                 for name, graph_elements in self.model_json.items():
                     pred_y = self.model_json[name]['pred_y']
                     target_idx = self.model_json[name]['index']
 
                     test_X = test_periods['features'][:, :, target_idx]
                     test_X = np.expand_dims(test_X, axis=CHANNEL_INDEX)
-                    test_y = test_periods['targets'][:, :, target_idx]
-                    test_y = np.expand_dims(test_y, axis=CHANNEL_INDEX)
                     proxy_y = np.zeros((test_X.shape[BATCH_INDEX], test_X.shape[TIME_INDEX], 1))
-                    dates = test_periods['dates']
+
                     carry = test_X
                     step_predictions = []
                     for i in range(nb_steps_out):
@@ -365,11 +381,20 @@ class WaveNetForecastingModel(object):
                         carry = np.concatenate([carry, next_steps], axis=TIME_INDEX)
                         carry = carry[:, 1:, :]
 
-                    dates = np.hstack(dates)
-                    predictions = np.concatenate(step_predictions, axis=TIME_INDEX)
-                    self.plot(predictions, test_y, dates)
-                    mape, mase, rmse = generate_stats(predictions, test_y)
+                    predict_name = np.concatenate(step_predictions, axis=TIME_INDEX)
+                    predict_name = np.squeeze(predict_name)
+                    predictions[:, :, target_idx] = predict_name
 
+            result_dict = {}
+            for idx, name in enumerate(self.ts_names):
+                result_dict[(name, 'prediction')] = predictions[:, :, idx].flatten()
+                result_dict[(name, 'actual')] = future[:, :, idx].flatten()
+
+            results_df = pd.DataFrame(result_dict)
+            results_df.index = dates
+            results_df.T.to_csv(self.model_path + '/results_df.csv', index_label=['first', 'second'])
+
+            return results_df
 
 
     def predict(self,
