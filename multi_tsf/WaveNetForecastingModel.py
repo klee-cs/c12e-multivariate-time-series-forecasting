@@ -301,11 +301,11 @@ class WaveNetForecastingModel(object):
             with tf.Session() as sess:
                 new_saver = tf.train.import_meta_graph(self.meta_path)
                 new_saver.restore(sess, tf.train.latest_checkpoint(self.model_path))
-                predictions = np.zeros((test_periods['targets'].shape[BATCH_INDEX],
-                                        test_periods['targets'].shape[TIME_INDEX],
-                                        test_periods['targets'].shape[CHANNEL_INDEX]))
-                test_X = test_periods['features']
                 future = test_periods['targets']
+                predictions = np.zeros((future.shape[BATCH_INDEX],
+                                        future.shape[TIME_INDEX],
+                                        future.shape[CHANNEL_INDEX]))
+                test_X = test_periods['features']
                 dates = np.array(test_periods['dates'])
                 carry = test_X
                 for i in range(nb_steps_out):
@@ -325,7 +325,8 @@ class WaveNetForecastingModel(object):
                                 next_steps.append(next_step)
                             except tf.errors.OutOfRangeError:
                                 break
-                        next_steps = np.expand_dims(np.vstack(next_steps)[:, -1, :], axis=TIME_INDEX)
+                        next_steps = np.vstack(next_steps)
+                        next_steps = np.expand_dims(next_steps[:, -1, :], axis=TIME_INDEX)
                         predictions[:, i, target_idx] = next_steps.flatten()
 
                     predict_i = np.expand_dims(predictions[:, i, :], axis=TIME_INDEX)
@@ -334,16 +335,12 @@ class WaveNetForecastingModel(object):
 
             result_dict = {}
             for idx, name in enumerate(self.ts_names):
-                result_dict[name] = {
-                    'prediction': predictions[:, :, idx].flatten(),
-                    'actual': future[:, :, idx].flatten()
-                }
+                result_dict[(name, 'prediction')] = predictions[:, :, idx].flatten()
+                result_dict[(name, 'actual')] = future[:, :, idx].flatten()
 
-            results_df = pd.DataFrame.from_dict(result_dict)
+            results_df = pd.DataFrame(result_dict)
             results_df.index = dates
             results_df.T.to_csv(self.model_path + '/results_df.csv', index_label=['first', 'second'])
-
-
 
             return results_df
 
@@ -352,10 +349,10 @@ class WaveNetForecastingModel(object):
             with tf.Session() as sess:
                 new_saver = tf.train.import_meta_graph(self.meta_path)
                 new_saver.restore(sess, tf.train.latest_checkpoint(self.model_path))
-                predictions = np.zeros((test_periods['targets'].shape[BATCH_INDEX],
-                                        test_periods['targets'].shape[TIME_INDEX],
-                                        test_periods['features'].shape[CHANNEL_INDEX]))
                 future = test_periods['targets']
+                predictions = np.zeros((future.shape[BATCH_INDEX],
+                                        future.shape[TIME_INDEX],
+                                        test_periods['features'].shape[CHANNEL_INDEX]))
                 dates = np.array(test_periods['dates'])
                 for name, graph_elements in self.model_json.items():
                     pred_y = self.model_json[name]['pred_y']

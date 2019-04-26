@@ -6,8 +6,8 @@ from multi_tsf.db_reader import Jackson_GGN_DB
 
 def main():
     epochs = 1
-    batch_size = 1
-    conditional = False
+    batch_size = 128
+    conditional = True
     nb_dilation_factors = [1, 2, 4, 8, 16, 32, 64]
     nb_layers = len(nb_dilation_factors)
     nb_filters = 16
@@ -43,7 +43,7 @@ def main():
                                       nb_input_features=nb_input_features,
                                       batch_size=batch_size,
                                       lr=1e-3,
-                                      model_path='./wavenet_unconditional',
+                                      model_path='./wavenet_conditional',
                                       ts_names = skill_ts.columns.to_list())
 
     wavenet.fit(forecast_data, epochs=epochs)
