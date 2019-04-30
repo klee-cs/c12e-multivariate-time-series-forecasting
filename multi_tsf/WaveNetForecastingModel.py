@@ -46,15 +46,15 @@ class WaveNetForecastingModel(object):
         self.batch_size = batch_size
 
 
-        self.placeholder_X = tf.placeholder(tf.float32, [None, None, self.nb_input_features])
-        self.placeholder_y = tf.placeholder(tf.float32, [None, None, 1])
-        self.dataset = tf.data.Dataset.from_tensor_slices((self.placeholder_X, self.placeholder_y))
-        self.batched_dataset = self.dataset.batch(batch_size=self.batch_size)
-        self.iterator = self.batched_dataset.make_initializable_iterator()
-        self.data_X, self.data_y = self.iterator.get_next()
-
-
         if from_file_model_params is None:
+            self.placeholder_X = tf.placeholder(tf.float32, [None, None, self.nb_input_features])
+            self.placeholder_y = tf.placeholder(tf.float32, [None, None, 1])
+            self.dataset = tf.data.Dataset.from_tensor_slices((self.placeholder_X, self.placeholder_y))
+            self.batched_dataset = self.dataset.batch(batch_size=self.batch_size)
+            self.iterator = self.batched_dataset.make_initializable_iterator()
+            self.init_op = self.iterator.make_initializer(self.batched_dataset, name='iterator_init_op')
+            self.data_X, self.data_y = self.iterator.get_next()
+
             #Create models for each time series
             self.model_params = {
                 'ts_names': self.ts_names,
@@ -67,8 +67,13 @@ class WaveNetForecastingModel(object):
                 'name': self.name,
                 'conditional': self.conditional,
                 'batch_size': self.batch_size,
+                'placeholder_X': self.placeholder_X.name,
+                'placeholder_y': self.placeholder_y.name,
+                'iterator': self.init_op.name,
                 'predict_tensor_names': {}
             }
+
+
             for idx, name in enumerate(self.ts_names):
                 with tf.name_scope(name):
                     with tf.variable_scope(name):
@@ -99,8 +104,8 @@ class WaveNetForecastingModel(object):
 
                         train_graph_elements = {
                             'index': idx,
-                            'loss': loss,
-                            'pred_y': pred_y,
+                            'loss': loss.name,
+                            'pred_y': pred_y.name,
                             'optimizer': optimizer,
                             'train_op': train_op,
                             'summaries': summaries
@@ -108,10 +113,11 @@ class WaveNetForecastingModel(object):
 
                         self.train_model_params[name] = train_graph_elements
 
-            pprint(self.train_model_params)
             pprint(self.model_params)
         else:
             self.model_params = from_file_model_params
+            self.meta_path = from_file_model_params['meta_path']
+            pprint(self.model_params)
 
 
     def _create_model(self,
@@ -268,8 +274,8 @@ class WaveNetForecastingModel(object):
                 val_i = 0
 
                 train_op = self.train_model_params[name]['train_op']
-                loss = self.train_model_params[name]['loss']
-                pred_y = self.train_model_params[name]['pred_y']
+                loss = tf.get_default_graph().get_tensor_by_name(self.train_model_params[name]['loss'])
+                pred_y = tf.get_default_graph().get_tensor_by_name(self.train_model_params[name]['pred_y'])
                 target_idx = self.train_model_params[name]['index']
                 summaries = self.train_model_params[name]['summaries']
                 merged = tf.summary.merge(summaries)
@@ -292,7 +298,7 @@ class WaveNetForecastingModel(object):
 
 
                 for _ in tqdm(range(epochs)):
-                    sess.run(self.iterator.initializer,
+                    sess.run(self.init_op,
                              feed_dict={self.placeholder_X: train_X,
                                         self.placeholder_y: train_y})
                     while (True):
@@ -303,7 +309,7 @@ class WaveNetForecastingModel(object):
                         except tf.errors.OutOfRangeError:
                             break
 
-                    sess.run(self.iterator.initializer,
+                    sess.run(self.init_op,
                              feed_dict={self.placeholder_X: val_X,
                                         self.placeholder_y: val_y})
 
@@ -331,12 +337,16 @@ class WaveNetForecastingModel(object):
                  forecast_data: ForecastTimeSeries,
                  set: str) -> np.array:
 
+        new_saver = tf.train.import_meta_graph(self.meta_path)
+        graph = tf.get_default_graph()
         nb_steps_out = forecast_data.nb_steps_out
         test_periods = forecast_data.reshaped_periods[set]
+        placeholder_X = graph.get_tensor_by_name(self.model_params['placeholder_X'])
+        placeholder_y = graph.get_tensor_by_name(self.model_params['placeholder_y'])
+        init_op = graph.get_operation_by_name(self.model_params['iterator'])
 
         if self.conditional:
             with tf.Session() as sess:
-                new_saver = tf.train.import_meta_graph(self.meta_path)
                 new_saver.restore(sess, tf.train.latest_checkpoint(self.model_path))
                 future = test_periods['targets']
                 predictions = np.zeros((future.shape[BATCH_INDEX],
@@ -346,15 +356,14 @@ class WaveNetForecastingModel(object):
                 dates = np.array(test_periods['dates'])
                 carry = test_X
                 for i in range(nb_steps_out):
-                    for name, graph_elements in self.train_model_params.items():
-                        pred_y = self.train_model_params[name]['pred_y']
-                        target_idx = self.train_model_params[name]['index']
+                    for name, graph_elements in self.model_params['predict_tensor_names'].items():
+                        pred_y = graph.get_tensor_by_name(graph_elements['pred_y'])
+                        target_idx = graph_elements['index']
 
                         proxy_y = np.zeros((carry.shape[BATCH_INDEX], carry.shape[TIME_INDEX], 1))
 
-
-                        sess.run(self.iterator.initializer,
-                                 feed_dict={self.placeholder_X: carry, self.placeholder_y: proxy_y})
+                        sess.run(init_op,
+                                 feed_dict={placeholder_X: carry, placeholder_y: proxy_y})
                         next_steps = []
                         while (True):
                             try:
@@ -384,16 +393,15 @@ class WaveNetForecastingModel(object):
 
         else:
             with tf.Session() as sess:
-                new_saver = tf.train.import_meta_graph(self.meta_path)
                 new_saver.restore(sess, tf.train.latest_checkpoint(self.model_path))
                 future = test_periods['targets']
                 predictions = np.zeros((future.shape[BATCH_INDEX],
                                         future.shape[TIME_INDEX],
                                         test_periods['features'].shape[CHANNEL_INDEX]))
                 dates = np.array(test_periods['dates'])
-                for name, graph_elements in self.train_model_params.items():
-                    pred_y = self.train_model_params[name]['pred_y']
-                    target_idx = self.train_model_params[name]['index']
+                for name, graph_elements in self.model_params['predict_tensor_names'].items():
+                    pred_y = graph.get_tensor_by_name(graph_elements[name]['pred_y'])
+                    target_idx = graph_elements['index']
 
                     test_X = test_periods['features'][:, :, target_idx]
                     test_X = np.expand_dims(test_X, axis=CHANNEL_INDEX)
@@ -402,7 +410,7 @@ class WaveNetForecastingModel(object):
                     carry = test_X
                     step_predictions = []
                     for i in range(nb_steps_out):
-                        sess.run(self.iterator.initializer, feed_dict={self.placeholder_X: carry, self.placeholder_y: proxy_y})
+                        sess.run(init_op, feed_dict={placeholder_X: carry, placeholder_y: proxy_y})
                         next_steps = []
                         while (True):
                             try:
@@ -430,15 +438,21 @@ class WaveNetForecastingModel(object):
 
             return results_df
 
+    def predict(self,
+                time_series: np.array,
+                nb_steps_out: int):
+        future = np.zeros((1, time_series.shape[TIME_INDEX], time_series.shape[CHANNEL_INDEX]))
+        test_X = np.expand_dims(time_series, axis=BATCH_INDEX)
+
 
     def save_model(self,
-                   sess: tf.Session,
-                   model_params: dict,
-                   saver: tf.train.Saver,
-                   epochs: int) -> None:
-        saver.save(sess, model_params['model_path'] + '/' + self.name, global_step=epochs)
-        with open(model_params['model_path'] + '/model_params.json', 'w+') as f:
-            json.dump(model_params, f)
+                       sess: tf.Session,
+                       model_params: dict,
+                       saver: tf.train.Saver,
+                       epochs: int) -> None:
+            saver.save(sess, model_params['model_path'] + '/' + self.name, global_step=epochs)
+            with open(model_params['model_path'] + '/model_params.json', 'w+') as f:
+                json.dump(model_params, f)
 
 
     @staticmethod
@@ -459,42 +473,5 @@ class WaveNetForecastingModel(object):
         return wavenet_forecasting_model
 
 
-    def predict(self,
-                time_series: np.array,
-                nb_steps_out: int) -> np.array:
-        time_series = np.expand_dims(time_series, axis=0)
-        proxy_y = np.zeros((time_series.shape[0], time_series.shape[1], self.nb_output_features))
-        with tf.Session() as sess:
-            new_saver = tf.train.import_meta_graph(self.meta_path)
-            new_saver.restore(sess, tf.train.latest_checkpoint(self.model_path))
-            carry = time_series
-            step_predictions = []
-            for i in range(nb_steps_out):
-                sess.run(self.iterator.initializer, feed_dict={self.placeholder_X: carry, self.placeholder_y: proxy_y})
-                next_steps = []
-                while (True):
-                    try:
-                        next_step = sess.run([self.pred_y])[0]
-                        next_steps.append(next_step)
-                    except tf.errors.OutOfRangeError:
-                        break
-                next_steps = np.expand_dims(np.vstack(next_steps)[:, -1, :], axis=1)
-                carry = np.concatenate([carry, next_steps], axis=1)
-                carry = carry[:, 1:, :]
-                step_predictions.append(next_steps)
-        predictions = np.concatenate(step_predictions, axis=1)[0]
-        return predictions
 
-    def plot(self, predictions, future, dates, nb_display=5):
-        nb_steps_out = future.shape[TIME_INDEX]
-        fig, ax = plt.subplots()
-        predictions = predictions.flatten()
-        future = future.flatten()
-        sns.lineplot(dates, predictions, label='prediction', ax=ax)
-        sns.lineplot(dates, future, label='actual', ax=ax)
-        predict_dates = dates[0::nb_steps_out]
-        ax.scatter(predict_dates, np.zeros(predict_dates.shape), s=30, c='r')
-        ax.grid()
-        plt.grid()
-        plt.show()
 

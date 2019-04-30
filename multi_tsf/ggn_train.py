@@ -52,7 +52,7 @@ def main():
     jackson_ggn_db.close()
 
 
-    wavenet_forecasting_model = WaveNetForecastingModel.restore_model(model_params_path='./wavenet_conditional/model_params.json')
+
 
 
 if __name__ == '__main__':
