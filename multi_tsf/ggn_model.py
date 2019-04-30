@@ -5,7 +5,7 @@ from multi_tsf.db_reader import Jackson_GGN_DB
 
 
 def main():
-    epochs = 3000
+    epochs = 1
     batch_size = 128
     conditional = True
     nb_dilation_factors = [1, 2, 4, 8, 16, 32, 64, 128]
@@ -50,6 +50,9 @@ def main():
     results_df = wavenet.evaluate(forecast_data, set='Validation')
 
     jackson_ggn_db.close()
+
+
+    wavenet_forecasting_model = WaveNetForecastingModel.restore_model(model_params_path='./wavenet_conditional/model_params.json')
 
 
 if __name__ == '__main__':

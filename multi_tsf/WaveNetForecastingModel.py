@@ -9,6 +9,7 @@ from multi_tsf.time_series_utils import ForecastTimeSeries
 from typing import List
 from pprint import pprint
 from tqdm import tqdm
+import json
 
 BATCH_INDEX = 0
 TIME_INDEX = 1
@@ -26,62 +27,91 @@ class WaveNetForecastingModel(object):
                  batch_size: int,
                  lr: float,
                  model_path: str,
-                 ts_names: dict) -> None:
+                 ts_names: dict,
+                 from_file_model_params: dict=None) -> None:
 
         self.ts_names = [x.replace(' ', '-') for x in ts_names]
-        self.model_json = {}
+        self.train_model_params = {}
         self.model_path = model_path
         self.name = name
         self.conditional = conditional
         self.nb_layers = nb_layers
         self.nb_filters = nb_filters
         self.nb_dilation_factors = nb_dilation_factors
-        if conditional:
+        if self.conditional:
             self.nb_input_features = nb_input_features
         else:
             self.nb_input_features = 1
         os.makedirs(model_path, exist_ok=True)
         self.batch_size = batch_size
+
+
         self.placeholder_X = tf.placeholder(tf.float32, [None, None, self.nb_input_features])
         self.placeholder_y = tf.placeholder(tf.float32, [None, None, 1])
         self.dataset = tf.data.Dataset.from_tensor_slices((self.placeholder_X, self.placeholder_y))
         self.batched_dataset = self.dataset.batch(batch_size=self.batch_size)
-
         self.iterator = self.batched_dataset.make_initializable_iterator()
         self.data_X, self.data_y = self.iterator.get_next()
 
-        for idx, name in enumerate(self.ts_names):
-            with tf.name_scope(name):
-                with tf.variable_scope(name):
-                    loss, pred_y, summaries = self._create_model(self.data_X,
-                                                                  self.data_y,
-                                                                  conditional=self.conditional,
-                                                                  nb_filters=self.nb_filters,
-                                                                  nb_layers=self.nb_layers,
-                                                                  nb_dilation_factors=self.nb_dilation_factors,
-                                                                  nb_input_features=self.nb_input_features)
-                    optimizer = tf.train.AdamOptimizer(lr)
-                    gradients = optimizer.compute_gradients(loss)
 
-                    for gradient, variable in gradients:
-                        if gradient is None or variable is None:
-                            continue
-                        summaries.append(tf.summary.histogram("gradients/" + variable.name, gradient))
-                        summaries.append(tf.summary.histogram("variables/" + variable.name, variable))
+        if from_file_model_params is None:
+            #Create models for each time series
+            self.model_params = {
+                'ts_names': self.ts_names,
+                'nb_layers': nb_layers,
+                'nb_filters': nb_filters,
+                'nb_dilation_factors': nb_dilation_factors,
+                'nb_input_features': nb_input_features,
+                'lr': lr,
+                'model_path': self.model_path,
+                'name': self.name,
+                'conditional': self.conditional,
+                'batch_size': self.batch_size,
+                'predict_tensor_names': {}
+            }
+            for idx, name in enumerate(self.ts_names):
+                with tf.name_scope(name):
+                    with tf.variable_scope(name):
+                        loss, pred_y, summaries = self._create_model(self.data_X,
+                                                                      self.data_y,
+                                                                      conditional=self.conditional,
+                                                                      nb_filters=self.nb_filters,
+                                                                      nb_layers=self.nb_layers,
+                                                                      nb_dilation_factors=self.nb_dilation_factors,
+                                                                      nb_input_features=self.nb_input_features)
+                        optimizer = tf.train.AdamOptimizer(lr, name='optimizer')
+                        gradients = optimizer.compute_gradients(loss)
 
-                    train_op = optimizer.minimize(loss)
+                        for gradient, variable in gradients:
+                            if gradient is None or variable is None:
+                                continue
+                            summaries.append(tf.summary.histogram("gradients/" + variable.name, gradient))
+                            summaries.append(tf.summary.histogram("variables/" + variable.name, variable))
+
+                        train_op = optimizer.minimize(loss)
+
+                        self.model_params['predict_tensor_names'][name] = {
+                            'index': idx,
+                            'loss': loss.name,
+                            'pred_y': pred_y.name
+                        }
 
 
-                    graph_elements = {
-                        'index': idx,
-                        'loss': loss,
-                        'pred_y': pred_y,
-                        'optimizer': optimizer,
-                        'train_op': train_op,
-                        'summaries': summaries
-                    }
+                        train_graph_elements = {
+                            'index': idx,
+                            'loss': loss,
+                            'pred_y': pred_y,
+                            'optimizer': optimizer,
+                            'train_op': train_op,
+                            'summaries': summaries
+                        }
 
-                    self.model_json[name] = graph_elements
+                        self.train_model_params[name] = train_graph_elements
+
+            pprint(self.train_model_params)
+            pprint(self.model_params)
+        else:
+            self.model_params = from_file_model_params
 
 
     def _create_model(self,
@@ -146,10 +176,10 @@ class WaveNetForecastingModel(object):
                                                          kernel_regularizer=regularizer,
                                                          kernel_initializer=initializer,
                                                          kernel_constraint=None)
-                pred_y = leaky_relu(final_dcc_layer(carry))
+                pred_y = leaky_relu(final_dcc_layer(carry), name='pred_y')
             summaries = []
             with tf.name_scope('Loss'):
-                loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(pred_y, data_y))
+                loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(pred_y, data_y), name='loss')
                 naive_loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(data_X, data_y))
                 summaries.append(tf.summary.scalar('loss', loss))
                 summaries.append(tf.summary.scalar('naive_loss', naive_loss))
@@ -227,7 +257,7 @@ class WaveNetForecastingModel(object):
 
         self.saver = tf.train.Saver()
         with tf.Session() as sess:
-            for name, graph_elements in self.model_json.items():
+            for name, graph_elements in self.train_model_params.items():
                 print(name)
                 sess.run(tf.variables_initializer(tf.global_variables(scope=name)))
 
@@ -237,11 +267,11 @@ class WaveNetForecastingModel(object):
                 train_i = 0
                 val_i = 0
 
-                train_op = self.model_json[name]['train_op']
-                loss = self.model_json[name]['loss']
-                pred_y = self.model_json[name]['pred_y']
-                target_idx = self.model_json[name]['index']
-                summaries = self.model_json[name]['summaries']
+                train_op = self.train_model_params[name]['train_op']
+                loss = self.train_model_params[name]['loss']
+                pred_y = self.train_model_params[name]['pred_y']
+                target_idx = self.train_model_params[name]['index']
+                summaries = self.train_model_params[name]['summaries']
                 merged = tf.summary.merge(summaries)
 
                 if self.conditional:
@@ -286,14 +316,21 @@ class WaveNetForecastingModel(object):
                             break
 
 
-            self.saver.save(sess, self.model_path + '/' + self.name, global_step=epochs)
+
             self.meta_path = self.model_path + '/' + self.name + '-%d.meta' % epochs
+            self.model_params['meta_path'] = self.meta_path
+            self.save_model(sess,
+                            self.model_params,
+                            self.saver,
+                            epochs)
+
 
 
 
     def evaluate(self,
                  forecast_data: ForecastTimeSeries,
                  set: str) -> np.array:
+
         nb_steps_out = forecast_data.nb_steps_out
         test_periods = forecast_data.reshaped_periods[set]
 
@@ -309,9 +346,9 @@ class WaveNetForecastingModel(object):
                 dates = np.array(test_periods['dates'])
                 carry = test_X
                 for i in range(nb_steps_out):
-                    for name, graph_elements in self.model_json.items():
-                        pred_y = self.model_json[name]['pred_y']
-                        target_idx = self.model_json[name]['index']
+                    for name, graph_elements in self.train_model_params.items():
+                        pred_y = self.train_model_params[name]['pred_y']
+                        target_idx = self.train_model_params[name]['index']
 
                         proxy_y = np.zeros((carry.shape[BATCH_INDEX], carry.shape[TIME_INDEX], 1))
 
@@ -354,9 +391,9 @@ class WaveNetForecastingModel(object):
                                         future.shape[TIME_INDEX],
                                         test_periods['features'].shape[CHANNEL_INDEX]))
                 dates = np.array(test_periods['dates'])
-                for name, graph_elements in self.model_json.items():
-                    pred_y = self.model_json[name]['pred_y']
-                    target_idx = self.model_json[name]['index']
+                for name, graph_elements in self.train_model_params.items():
+                    pred_y = self.train_model_params[name]['pred_y']
+                    target_idx = self.train_model_params[name]['index']
 
                     test_X = test_periods['features'][:, :, target_idx]
                     test_X = np.expand_dims(test_X, axis=CHANNEL_INDEX)
@@ -392,6 +429,34 @@ class WaveNetForecastingModel(object):
             results_df.T.to_csv(self.model_path + '/results_df.csv', index_label=['first', 'second'])
 
             return results_df
+
+
+    def save_model(self,
+                   sess: tf.Session,
+                   model_params: dict,
+                   saver: tf.train.Saver,
+                   epochs: int) -> None:
+        saver.save(sess, model_params['model_path'] + '/' + self.name, global_step=epochs)
+        with open(model_params['model_path'] + '/model_params.json', 'w+') as f:
+            json.dump(model_params, f)
+
+
+    @staticmethod
+    def restore_model(model_params_path: str):
+        with open(model_params_path, 'r') as f:
+            model_params = json.load(f)
+            wavenet_forecasting_model = WaveNetForecastingModel(name=model_params['name'],
+                                                                conditional=model_params['conditional'],
+                                                                nb_layers=model_params['nb_layers'],
+                                                                nb_filters=model_params['nb_filters'],
+                                                                nb_dilation_factors=model_params['nb_dilation_factors'],
+                                                                nb_input_features=model_params['nb_input_features'],
+                                                                batch_size=model_params['batch_size'],
+                                                                lr=model_params['lr'],
+                                                                model_path=model_params['model_path'],
+                                                                ts_names=model_params['ts_names'],
+                                                                from_file_model_params=model_params)
+        return wavenet_forecasting_model
 
 
     def predict(self,
