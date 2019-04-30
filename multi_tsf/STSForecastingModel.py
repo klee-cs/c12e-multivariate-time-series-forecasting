@@ -135,18 +135,28 @@ def main():
 
 if __name__ == '__main__':
     num_forecast_steps = 1000
-    synthetic_sinusoids = SyntheticSinusoids(num_sinusoids=1, amplitude=1, sampling_rate=5000, length=10000).sinusoids
+    synthetic_sinusoids = SyntheticSinusoids(num_sinusoids=1,
+                                             amplitude=1,
+                                             sampling_rate=5000,
+                                             length=2000).sinusoids
     training_data = synthetic_sinusoids[:-num_forecast_steps]
+    start = pd.Timestamp('2000-01-01')
+    end = pd.Timestamp('2019-01-01')
+    t = np.linspace(start.value, end.value, 2000)
+    t = pd.to_datetime(t)
+    dates = np.asarray(t)
+    loc = mdates.YearLocator(3)
+    fmt = mdates.DateFormatter('%Y')
 
     tf.reset_default_graph()
-    forecast_skill_model = build_model(observed_time_series=training_data)
+    model = build_model(observed_time_series=training_data)
 
     with tf.variable_scope('sts_elbo', reuse=tf.AUTO_REUSE):
         elbo_loss, variational_posteriors = tfp.sts.build_factored_variational_loss(
-            forecast_skill_model,
+            model,
             observed_time_series=training_data)
 
-    num_variational_steps = 201  # @param { isTemplate: true}
+    num_variational_steps = 101  # @param { isTemplate: true}
     num_variational_steps = int(num_variational_steps)
 
     train_vi = tf.train.AdamOptimizer(0.1).minimize(elbo_loss)
@@ -158,5 +168,32 @@ if __name__ == '__main__':
                 print("step {} -ELBO {}".format(i, elbo_))
 
         # Draw samples from the variational posterior.
-        q_samples_forecast_skill_ = sess.run({k: q.sample(50)
+        q_samples_post_ = sess.run({k: q.sample(50)
                                    for k, q in variational_posteriors.items()})
+
+    forecast_dist = tfp.sts.forecast(
+        model,
+        observed_time_series=training_data,
+        parameter_samples=q_samples_post_,
+        num_steps_forecast=num_forecast_steps)
+
+    num_samples = 10
+
+    with tf.Session() as sess:
+        forecast_mean, forecast_scale, forecast_samples = sess.run(
+            (forecast_dist.mean()[..., 0],
+             forecast_dist.stddev()[..., 0],
+             forecast_dist.sample(num_samples)[..., 0]))
+
+    fig, ax = plot_forecast(
+        dates, synthetic_sinusoids,
+        forecast_mean, forecast_scale, forecast_samples,
+        x_locator=loc,
+        x_formatter=fmt,
+        title="Synthetics Sinusoids")
+    ax.axvline(dates[-num_forecast_steps], linestyle="--")
+    ax.legend(loc="upper left")
+    ax.set_ylabel("Synthetics Sinusoids")
+    ax.set_xlabel("Year")
+    fig.autofmt_xdate()
+    plt.show()
