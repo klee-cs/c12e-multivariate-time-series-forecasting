@@ -5,7 +5,7 @@ from multi_tsf.db_reader import Jackson_GGN_DB
 
 
 def main():
-    epochs = 1
+    epochs = 3000
     batch_size = 128
     conditional = True
     nb_dilation_factors = [1, 2, 4, 8, 16, 32, 64, 128]
@@ -22,7 +22,7 @@ def main():
                                                              end_hour=24,
                                                              include_weekend=False,
                                                              use_default_skills=True,
-                                                             from_cache=True)
+                                                             from_cache=False)
 
 
     skill_ts = pd.DataFrame(skill_ts.iloc[:, 0:3])
