@@ -183,28 +183,38 @@ class ForecastTimeSeries(object):
 
 class SyntheticSinusoids(object):
 
-    def __init__(self, num_sinusoids, amplitude, sampling_rate, length):
+    def __init__(self,
+                 num_sinusoids: int,
+                 amplitude: float,
+                 sampling_rate: int,
+                 length: int,
+                 frequency: float = None):
         self.num_sinusoids = num_sinusoids
         self.amplitude = amplitude
         self.sampling_rate = sampling_rate
         self.length = length
         n = np.arange(0, self.length)
 
-        self.sinusoids = []
-        for i in range(num_sinusoids):
-            f = np.random.uniform(int(sampling_rate//100), int(self.sampling_rate//30))
-            noise_level = np.random.uniform(0.01, 0.02)
-            x = self.amplitude*np.cos(2*np.pi*f/self.sampling_rate*n) \
-             + np.random.normal(loc=0.0, scale=noise_level*self.amplitude, size=n.shape[0]) + self.amplitude
-            self.sinusoids.append(x.reshape(-1, 1))
+        if frequency is  None:
+            self.sinusoids = []
+            for i in range(num_sinusoids):
+                f = np.random.uniform(int(sampling_rate//100), int(self.sampling_rate//30))
+                noise_level = np.random.uniform(0.01, 0.02)
+                x = self.amplitude*np.cos(2*np.pi*f/self.sampling_rate*n) \
+                 + np.random.normal(loc=0.0, scale=noise_level*self.amplitude, size=n.shape[0]) + self.amplitude
+                self.sinusoids.append(x.reshape(-1, 1))
 
-        self.sinusoids = np.concatenate(self.sinusoids, axis=1)
+            self.sinusoids = np.concatenate(self.sinusoids, axis=1)
+        else:
+            noise_level = np.random.uniform(0.01, 0.02)
+            self.sinusoids = self.amplitude * np.cos(2 * np.pi * frequency / self.sampling_rate * n) \
+                + np.random.normal(loc=0.0, scale=noise_level * self.amplitude, size=n.shape[0]) + self.amplitude
 
 
     def plot(self):
         for i in range(self.sinusoids.shape[1]):
             plt.plot(self.sinusoids[:, i])
-        plt.show()
+            plt.show()
 
 
 def generate_stats(trueY, forecastY, missing=True):

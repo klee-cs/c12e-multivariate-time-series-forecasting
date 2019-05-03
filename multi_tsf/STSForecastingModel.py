@@ -137,9 +137,13 @@ if __name__ == '__main__':
     num_forecast_steps = 1000
     synthetic_sinusoids = SyntheticSinusoids(num_sinusoids=1,
                                              amplitude=1,
-                                             sampling_rate=5000,
-                                             length=2000).sinusoids
+                                             sampling_rate=1000,
+                                             length=1000,
+                                             frequency=10).sinusoids
     training_data = synthetic_sinusoids[:-num_forecast_steps]
+    plt.plot(np.arange(0, synthetic_sinusoids.shape[0]), synthetic_sinusoids)
+    plt.show()
+    exit(0)
     start = pd.Timestamp('2000-01-01')
     end = pd.Timestamp('2019-01-01')
     t = np.linspace(start.value, end.value, 2000)
