@@ -265,8 +265,8 @@ class WaveNetForecastingModel(object):
                 print(name)
                 sess.run(tf.variables_initializer(tf.global_variables(scope=name)))
 
-                train_writer = tf.summary.FileWriter(self.model_path + '/logs/' + name + '/train', sess.graph)
-                test_writer = tf.summary.FileWriter(self.model_path + '/logs/' + name + '/test')
+                # train_writer = tf.summary.FileWriter(self.model_path + '/logs/' + name + '/train', sess.graph)
+                # test_writer = tf.summary.FileWriter(self.model_path + '/logs/' + name + '/test')
 
                 train_i = 0
                 val_i = 0
