@@ -402,7 +402,7 @@ class WaveNetForecastingModel(object):
                                         test_periods['features'].shape[CHANNEL_INDEX]))
                 dates = np.array(test_periods['dates'])
                 for name, graph_elements in self.model_params['predict_tensor_names'].items():
-                    pred_y = graph.get_tensor_by_name(graph_elements[name]['pred_y'])
+                    pred_y = graph.get_tensor_by_name(graph_elements['pred_y'])
                     target_idx = graph_elements['index']
 
                     test_X = test_periods['features'][:, :, target_idx]
