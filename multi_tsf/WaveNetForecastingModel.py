@@ -180,7 +180,8 @@ class WaveNetForecastingModel(object):
                                                          kernel_regularizer=regularizer,
                                                          kernel_initializer=initializer,
                                                          kernel_constraint=None)
-                pred_y = leaky_relu(final_dcc_layer(carry), name='pred_y')
+                pred_y = leaky_relu(final_dcc_layer(carry))
+
             summaries = []
             with tf.name_scope('Loss'):
                 loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(pred_y, data_y), name='loss')
