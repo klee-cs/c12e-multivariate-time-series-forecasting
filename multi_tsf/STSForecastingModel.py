@@ -122,10 +122,21 @@ def plot_one_step_predictive(dates,
 
 
 def build_model(observed_time_series):
-  trend = sts.LocalLinearTrend(observed_time_series=observed_time_series)
-  seasonal = tfp.sts.Seasonal(
-      num_seasons=12, observed_time_series=observed_time_series)
-  model = sts.Sum([trend, seasonal], observed_time_series=observed_time_series)
+  # trend = sts.LocalLinearTrend(observed_time_series=observed_time_series)
+  seasonal_daily = tfp.sts.Seasonal(
+      num_seasons=7,
+      num_steps_per_season=48,
+      observed_time_series=observed_time_series,
+      name='day_of_week_effect'
+  )
+  seasonal_weekly = tfp.sts.Seasonal(
+      num_seasons=52,
+      num_steps_per_season=48*7,
+      observed_time_series=observed_time_series,
+      name='week_of_year_effect'
+  )
+  model = sts.Sum([seasonal_daily, seasonal_weekly],
+                  observed_time_series=observed_time_series)
   return model
 
 
@@ -134,21 +145,35 @@ def main():
     pass
 
 if __name__ == '__main__':
-    num_forecast_steps = 1000
-    synthetic_sinusoids = SyntheticSinusoids(num_sinusoids=1,
-                                             amplitude=1,
-                                             sampling_rate=1000,
-                                             length=1000,
-                                             frequency=10).sinusoids
-    training_data = synthetic_sinusoids[:-num_forecast_steps]
-    plt.plot(np.arange(0, synthetic_sinusoids.shape[0]), synthetic_sinusoids)
-    plt.show()
-    exit(0)
-    start = pd.Timestamp('2000-01-01')
+    num_forecast_steps = 48*7
+    num_years = 1
+    num_half_hours = series_length = num_years*365*48
+    daily_sinusoids = SyntheticSinusoids(num_sinusoids=1,
+                                          amplitude=1,
+                                          sampling_rate=series_length,
+                                          length=series_length,
+                                          frequency=365*num_years).sinusoids
+    weekly_sinusoids = SyntheticSinusoids(num_sinusoids=1,
+                                          amplitude=1,
+                                          sampling_rate=series_length,
+                                          length=series_length,
+                                          frequency=52*num_years).sinusoids
+    # monthly_sinusoids = SyntheticSinusoids(num_sinusoids=1,
+    #                                        amplitude=1,
+    #                                        sampling_rate=series_length,
+    #                                        length=series_length,
+    #                                        frequency=12*num_years).sinusoids
+    sinusoids = daily_sinusoids + weekly_sinusoids
+    start = pd.Timestamp('2017-01-01')
     end = pd.Timestamp('2019-01-01')
-    t = np.linspace(start.value, end.value, 2000)
+    t = np.linspace(start.value, end.value, series_length)
     t = pd.to_datetime(t)
     dates = np.asarray(t)
+    plt.plot(dates, sinusoids)
+    plt.show()
+
+    training_data = sinusoids[:-num_forecast_steps]
+
     loc = mdates.YearLocator(3)
     fmt = mdates.DateFormatter('%Y')
 
@@ -160,7 +185,7 @@ if __name__ == '__main__':
             model,
             observed_time_series=training_data)
 
-    num_variational_steps = 101  # @param { isTemplate: true}
+    num_variational_steps = 201  # @param { isTemplate: true}
     num_variational_steps = int(num_variational_steps)
 
     train_vi = tf.train.AdamOptimizer(0.1).minimize(elbo_loss)
@@ -190,7 +215,7 @@ if __name__ == '__main__':
              forecast_dist.sample(num_samples)[..., 0]))
 
     fig, ax = plot_forecast(
-        dates, synthetic_sinusoids,
+        dates, sinusoids,
         forecast_mean, forecast_scale, forecast_samples,
         x_locator=loc,
         x_formatter=fmt,
