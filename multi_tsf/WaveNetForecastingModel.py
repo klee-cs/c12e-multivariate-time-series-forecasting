@@ -302,9 +302,9 @@ class WaveNetForecastingModel(object):
                     while (True):
                         try:
                             _, eloss, epred_y, edata_y, esummary = sess.run([train_op, loss, pred_y, self.data_y, merged])
-                            if train_i % 1000 == 0:
-                                train_writer.add_summary(esummary, train_i)
-                                train_i += 1
+                            # if train_i % 1000 == 0:
+                            #     train_writer.add_summary(esummary, train_i)
+                            #     train_i += 1
                         except tf.errors.OutOfRangeError:
                             break
 
@@ -316,9 +316,9 @@ class WaveNetForecastingModel(object):
                     while (True):
                         try:
                             eloss, epred_y, edata_y, esummary = sess.run([loss, pred_y, self.data_y, merged])
-                            if val_i % 1000 == 0:
-                                test_writer.add_summary(esummary, val_i)
-                                val_i += 1
+                            # if val_i % 1000 == 0:
+                            #     test_writer.add_summary(esummary, val_i)
+                            #     val_i += 1
                         except tf.errors.OutOfRangeError:
                             break
 
