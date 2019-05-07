@@ -4,59 +4,11 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import seaborn as sns
 import collections
-from multi_tsf.db_reader import Jackson_GGN_DB
 from multi_tsf.time_series_utils import SyntheticSinusoids
 import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow_probability import distributions as tfd
 from tensorflow_probability import sts
-
-def plot_forecast(x,
-                  y,
-                  forecast_mean,
-                  forecast_scale,
-                  forecast_samples,
-                  title,
-                  x_locator=None,
-                  x_formatter=None):
-  """Plot a forecast distribution against the 'true' time series."""
-  colors = sns.color_palette()
-  c1, c2 = colors[0], colors[1]
-  fig = plt.figure(figsize=(12, 6))
-  ax = fig.add_subplot(1, 1, 1)
-
-  num_steps = len(y)
-  num_steps_forecast = forecast_mean.shape[-1]
-  num_steps_train = num_steps - num_steps_forecast
-
-
-  ax.plot(x, y, lw=2, color=c1, label='ground truth')
-
-  forecast_steps = np.arange(
-      x[num_steps_train],
-      x[num_steps_train]+num_steps_forecast,
-      dtype=x.dtype)
-
-  ax.plot(forecast_steps, forecast_samples.T, lw=1, color=c2, alpha=0.1)
-
-  ax.plot(forecast_steps, forecast_mean, lw=2, ls='--', color=c2,
-           label='forecast')
-  ax.fill_between(forecast_steps,
-                   forecast_mean-2*forecast_scale,
-                   forecast_mean+2*forecast_scale, color=c2, alpha=0.2)
-
-  ymin, ymax = min(np.min(forecast_samples), np.min(y)), max(np.max(forecast_samples), np.max(y))
-  yrange = ymax-ymin
-  ax.set_ylim([ymin - yrange*0.1, ymax + yrange*0.1])
-  ax.set_title("{}".format(title))
-  ax.legend()
-
-  if x_locator is not None:
-    ax.xaxis.set_major_locator(x_locator)
-    ax.xaxis.set_major_formatter(x_formatter)
-    fig.autofmt_xdate()
-
-  return fig, ax
 
 
 def plot_components(dates,
@@ -124,19 +76,19 @@ def plot_one_step_predictive(dates,
 def build_model(observed_time_series):
   # trend = sts.LocalLinearTrend(observed_time_series=observed_time_series)
   seasonal_daily = tfp.sts.Seasonal(
-      num_seasons=7,
-      num_steps_per_season=48,
+      num_seasons=48,
+      num_steps_per_season=1,
       observed_time_series=observed_time_series,
       name='day_of_week_effect'
   )
   seasonal_weekly = tfp.sts.Seasonal(
-      num_seasons=52,
+      num_seasons=7,
       num_steps_per_season=48*7,
       observed_time_series=observed_time_series,
       name='week_of_year_effect'
   )
-  model = sts.Sum([seasonal_daily, seasonal_weekly],
-                  observed_time_series=observed_time_series)
+  model = sts.Sum([seasonal_daily, seasonal_weekly], observed_time_series=observed_time_series)
+
   return model
 
 
@@ -146,36 +98,21 @@ def main():
 
 if __name__ == '__main__':
     num_forecast_steps = 48*7
-    num_years = 1
-    num_half_hours = series_length = num_years*365*48
+    num_years = 2
+    num_half_hours = series_length = int(num_years*365*48)
     daily_sinusoids = SyntheticSinusoids(num_sinusoids=1,
                                           amplitude=1,
                                           sampling_rate=series_length,
                                           length=series_length,
-                                          frequency=365*num_years).sinusoids
+                                          frequency=int(365*num_years)).sinusoids
     weekly_sinusoids = SyntheticSinusoids(num_sinusoids=1,
                                           amplitude=1,
                                           sampling_rate=series_length,
                                           length=series_length,
-                                          frequency=52*num_years).sinusoids
-    # monthly_sinusoids = SyntheticSinusoids(num_sinusoids=1,
-    #                                        amplitude=1,
-    #                                        sampling_rate=series_length,
-    #                                        length=series_length,
-    #                                        frequency=12*num_years).sinusoids
+                                          frequency=int(52*num_years)).sinusoids
     sinusoids = daily_sinusoids + weekly_sinusoids
-    start = pd.Timestamp('2017-01-01')
-    end = pd.Timestamp('2019-01-01')
-    t = np.linspace(start.value, end.value, series_length)
-    t = pd.to_datetime(t)
-    dates = np.asarray(t)
-    plt.plot(dates, sinusoids)
-    plt.show()
 
     training_data = sinusoids[:-num_forecast_steps]
-
-    loc = mdates.YearLocator(3)
-    fmt = mdates.DateFormatter('%Y')
 
     tf.reset_default_graph()
     model = build_model(observed_time_series=training_data)
@@ -185,7 +122,7 @@ if __name__ == '__main__':
             model,
             observed_time_series=training_data)
 
-    num_variational_steps = 201  # @param { isTemplate: true}
+    num_variational_steps = 41  # @param { isTemplate: true}
     num_variational_steps = int(num_variational_steps)
 
     train_vi = tf.train.AdamOptimizer(0.1).minimize(elbo_loss)
@@ -197,7 +134,7 @@ if __name__ == '__main__':
                 print("step {} -ELBO {}".format(i, elbo_))
 
         # Draw samples from the variational posterior.
-        q_samples_post_ = sess.run({k: q.sample(50)
+        q_samples_post_ = sess.run({k: q.sample(10)
                                    for k, q in variational_posteriors.items()})
 
     forecast_dist = tfp.sts.forecast(
@@ -214,15 +151,13 @@ if __name__ == '__main__':
              forecast_dist.stddev()[..., 0],
              forecast_dist.sample(num_samples)[..., 0]))
 
-    fig, ax = plot_forecast(
-        dates, sinusoids,
-        forecast_mean, forecast_scale, forecast_samples,
-        x_locator=loc,
-        x_formatter=fmt,
-        title="Synthetics Sinusoids")
-    ax.axvline(dates[-num_forecast_steps], linestyle="--")
-    ax.legend(loc="upper left")
-    ax.set_ylabel("Synthetics Sinusoids")
-    ax.set_xlabel("Year")
-    fig.autofmt_xdate()
+
+    forecast_steps = np.arange(0, num_forecast_steps)
+    plt.plot(forecast_steps, forecast_samples.T, lw=1, alpha=0.1)
+    plt.plot(forecast_steps, sinusoids[-num_forecast_steps:], label='actual')
+    plt.plot(forecast_steps, forecast_mean, lw=2, ls='--', label='forecast_mean')
+    plt.fill_between(forecast_steps,
+                    forecast_mean - 2 * forecast_scale,
+                    forecast_mean + 2 * forecast_scale, alpha=0.2)
     plt.show()
+

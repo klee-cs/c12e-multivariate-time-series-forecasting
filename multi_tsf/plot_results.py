@@ -10,7 +10,7 @@ if __name__ == '__main__':
     for col in col_names:
         print(col)
         # df[col].plot()
-        # plt.show()
+        plt.show()
         y_pred = df[(col, 'prediction')].values.reshape(-1, 1)
         y_actual = df[(col, 'actual')].values.reshape(-1, 1)
         y_pred[y_pred > 2000] = 0
@@ -18,11 +18,10 @@ if __name__ == '__main__':
         mape, mase, rmse = generate_stats(y_actual, y_pred)
         stats_dict[col] = [mape * 100, mase, rmse]
         print(mape, mase, rmse)
-        plt.plot(y_pred, label='prediction')
-        plt.plot(y_actual, label='actual')
-        plt.legend()
-        plt.show()
     stats_df = pd.DataFrame.from_dict(stats_dict)
     stats_df.index = ['MAPE', 'MASE', 'RMSE']
-    stats_df.loc['MASE'].plot.barh()
+    fig, ax = plt.subplots(1, 3, sharey='row')
+    stats_df.loc['RMSE'].plot.barh(ax=ax[0], title='RMSE')
+    stats_df.loc['MAPE'].plot.barh(ax=ax[1], title='MAPE')
+    stats_df.loc['MASE'].plot.barh(ax=ax[2], title='MASE')
     plt.show()
