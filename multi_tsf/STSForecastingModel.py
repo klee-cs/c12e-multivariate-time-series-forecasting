@@ -97,7 +97,8 @@ def main():
     pass
 
 if __name__ == '__main__':
-    num_forecast_steps = 48*7
+    path = './STS'
+    num_forecast_steps = 48*31
 
     jackson_ggn_db = Jackson_GGN_DB(cache_path='./data')
     skill_ts = jackson_ggn_db.get_summed_work_items_by_skill(start_date='2017-01-31',
@@ -106,32 +107,35 @@ if __name__ == '__main__':
                                                              end_hour=24,
                                                              include_weekend=False,
                                                              use_default_skills=True,
-                                                             from_cache=False)
+                                                             from_cache=True)
 
-    data = skill_ts.iloc[:, 10].values
+    data = skill_ts.iloc[:, 0].values
     training_data = data[:-num_forecast_steps]
 
     tf.reset_default_graph()
     model = build_model(observed_time_series=training_data)
+
 
     with tf.variable_scope('sts_elbo', reuse=tf.AUTO_REUSE):
         elbo_loss, variational_posteriors = tfp.sts.build_factored_variational_loss(
             model,
             observed_time_series=training_data)
 
-    num_variational_steps = 26  # @param { isTemplate: true}
+    num_variational_steps = 2  # @param { isTemplate: true}
     num_variational_steps = int(num_variational_steps)
-
     train_vi = tf.train.AdamOptimizer(0.1).minimize(elbo_loss)
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
+        train_writer = tf.summary.FileWriter(path + '/logs/train', sess.graph)
         for i in range(num_variational_steps):
-            _, elbo_ = sess.run((train_vi, elbo_loss))
+            _, elbo_ = sess.run([train_vi, elbo_loss])
             print("step {} -ELBO {}".format(i, elbo_))
-
         # Draw samples from the variational posterior.
         q_samples_post_ = sess.run({k: q.sample(10)
                                    for k, q in variational_posteriors.items()})
+
+
+
 
     forecast_dist = tfp.sts.forecast(
         model,
