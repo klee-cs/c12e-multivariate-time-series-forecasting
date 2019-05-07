@@ -106,7 +106,7 @@ if __name__ == '__main__':
                                                              end_hour=24,
                                                              include_weekend=False,
                                                              use_default_skills=True,
-                                                             from_cache=True)
+                                                             from_cache=False)
 
     data = skill_ts.iloc[:, 10].values
     training_data = data[:-num_forecast_steps]
