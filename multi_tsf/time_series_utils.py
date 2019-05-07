@@ -246,11 +246,6 @@ def generate_stats(trueY, forecastY, missing=True):
         return mape, mase, rmse
 
 
-def main():
-    pass
-
-if __name__ == '__main__':
-    main()
 
 
 

@@ -1,10 +1,10 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
 import seaborn as sns
 import collections
 from multi_tsf.time_series_utils import SyntheticSinusoids
+from multi_tsf.db_reader import Jackson_GGN_DB
 import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow_probability import distributions as tfd
@@ -82,8 +82,8 @@ def build_model(observed_time_series):
       name='day_of_week_effect'
   )
   seasonal_weekly = tfp.sts.Seasonal(
-      num_seasons=7,
-      num_steps_per_season=48*7,
+      num_seasons=5,
+      num_steps_per_season=48*5,
       observed_time_series=observed_time_series,
       name='week_of_year_effect'
   )
@@ -98,21 +98,18 @@ def main():
 
 if __name__ == '__main__':
     num_forecast_steps = 48*7
-    num_years = 2
-    num_half_hours = series_length = int(num_years*365*48)
-    daily_sinusoids = SyntheticSinusoids(num_sinusoids=1,
-                                          amplitude=1,
-                                          sampling_rate=series_length,
-                                          length=series_length,
-                                          frequency=int(365*num_years)).sinusoids
-    weekly_sinusoids = SyntheticSinusoids(num_sinusoids=1,
-                                          amplitude=1,
-                                          sampling_rate=series_length,
-                                          length=series_length,
-                                          frequency=int(52*num_years)).sinusoids
-    sinusoids = daily_sinusoids + weekly_sinusoids
 
-    training_data = sinusoids[:-num_forecast_steps]
+    jackson_ggn_db = Jackson_GGN_DB(cache_path='./data')
+    skill_ts = jackson_ggn_db.get_summed_work_items_by_skill(start_date='2017-01-31',
+                                                             end_date='2019-03-22',
+                                                             start_hour=0,
+                                                             end_hour=24,
+                                                             include_weekend=False,
+                                                             use_default_skills=True,
+                                                             from_cache=True)
+
+    data = skill_ts.iloc[:, 10].values
+    training_data = data[:-num_forecast_steps]
 
     tf.reset_default_graph()
     model = build_model(observed_time_series=training_data)
@@ -122,7 +119,7 @@ if __name__ == '__main__':
             model,
             observed_time_series=training_data)
 
-    num_variational_steps = 41  # @param { isTemplate: true}
+    num_variational_steps = 26  # @param { isTemplate: true}
     num_variational_steps = int(num_variational_steps)
 
     train_vi = tf.train.AdamOptimizer(0.1).minimize(elbo_loss)
@@ -130,8 +127,7 @@ if __name__ == '__main__':
         sess.run(tf.global_variables_initializer())
         for i in range(num_variational_steps):
             _, elbo_ = sess.run((train_vi, elbo_loss))
-            if i % 20 == 0:
-                print("step {} -ELBO {}".format(i, elbo_))
+            print("step {} -ELBO {}".format(i, elbo_))
 
         # Draw samples from the variational posterior.
         q_samples_post_ = sess.run({k: q.sample(10)
@@ -154,7 +150,7 @@ if __name__ == '__main__':
 
     forecast_steps = np.arange(0, num_forecast_steps)
     plt.plot(forecast_steps, forecast_samples.T, lw=1, alpha=0.1)
-    plt.plot(forecast_steps, sinusoids[-num_forecast_steps:], label='actual')
+    plt.plot(forecast_steps, data[-num_forecast_steps:], label='actual')
     plt.plot(forecast_steps, forecast_mean, lw=2, ls='--', label='forecast_mean')
     plt.fill_between(forecast_steps,
                     forecast_mean - 2 * forecast_scale,
