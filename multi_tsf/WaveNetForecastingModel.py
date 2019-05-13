@@ -266,11 +266,9 @@ class WaveNetForecastingModel(object):
                 print(name)
                 sess.run(tf.variables_initializer(tf.global_variables(scope=name)))
 
-                # train_writer = tf.summary.FileWriter(self.model_path + '/logs/' + name + '/train', sess.graph)
-                # test_writer = tf.summary.FileWriter(self.model_path + '/logs/' + name + '/test')
+                train_writer = tf.summary.FileWriter(self.model_path + '/logs/' + name + '/train', sess.graph)
+                test_writer = tf.summary.FileWriter(self.model_path + '/logs/' + name + '/test')
 
-                train_i = 0
-                val_i = 0
 
                 train_op = self.train_model_params[name]['train_op']
                 loss = tf.get_default_graph().get_tensor_by_name(self.train_model_params[name]['loss'])
@@ -296,16 +294,15 @@ class WaveNetForecastingModel(object):
                 val_y = np.expand_dims(val_y, axis=CHANNEL_INDEX)
 
 
-                for _ in tqdm(range(epochs)):
+                for i in tqdm(range(epochs)):
                     sess.run(self.init_op,
                              feed_dict={self.placeholder_X: train_X,
                                         self.placeholder_y: train_y})
                     while (True):
                         try:
                             _, eloss, epred_y, edata_y, esummary = sess.run([train_op, loss, pred_y, self.data_y, merged])
-                            # if train_i % 1000 == 0:
-                            #     train_writer.add_summary(esummary, train_i)
-                            #     train_i += 1
+                            if i % 1000 == 0:
+                                train_writer.add_summary(esummary, i)
                         except tf.errors.OutOfRangeError:
                             break
 
@@ -317,9 +314,8 @@ class WaveNetForecastingModel(object):
                     # while (True):
                     #     try:
                     #         eloss, epred_y, edata_y, esummary = sess.run([loss, pred_y, self.data_y, merged])
-                    #         # if val_i % 1000 == 0:
-                    #         #     test_writer.add_summary(esummary, val_i)
-                    #         #     val_i += 1
+                    #         # if i % 1000 == 0:
+                    #         #     test_writer.add_summary(esummary, i)
                     #     except tf.errors.OutOfRangeError:
                     #         break
 
@@ -399,7 +395,7 @@ class WaveNetForecastingModel(object):
                 future = test_periods['targets']
                 predictions = np.zeros((future.shape[BATCH_INDEX],
                                         future.shape[TIME_INDEX],
-                                        test_periods['features'].shape[CHANNEL_INDEX]))
+                                        future.shape[CHANNEL_INDEX]))
                 dates = np.array(test_periods['dates'])
                 for name, graph_elements in self.model_params['predict_tensor_names'].items():
                     pred_y = graph.get_tensor_by_name(graph_elements['pred_y'])
@@ -440,12 +436,85 @@ class WaveNetForecastingModel(object):
 
             return results_df
 
-    #TODO write predict for a single batch without ground truth
     def predict(self,
                 time_series: np.array,
                 nb_steps_out: int):
-        future = np.zeros((1, time_series.shape[TIME_INDEX], time_series.shape[CHANNEL_INDEX]))
-        test_X = np.expand_dims(time_series, axis=BATCH_INDEX)
+        new_saver = tf.train.import_meta_graph(self.meta_path)
+        graph = tf.get_default_graph()
+        placeholder_X = graph.get_tensor_by_name(self.model_params['placeholder_X'])
+        placeholder_y = graph.get_tensor_by_name(self.model_params['placeholder_y'])
+        init_op = graph.get_operation_by_name(self.model_params['iterator'])
+
+        if self.conditional:
+            with tf.Session() as sess:
+                new_saver.restore(sess, tf.train.latest_checkpoint(self.model_path))
+                predictions = np.zeros((1,
+                                        nb_steps_out,
+                                        time_series.shape[1]))
+                carry = np.expand_dims(time_series, axis=0)
+                for i in range(nb_steps_out):
+                    for name, graph_elements in self.model_params['predict_tensor_names'].items():
+                        pred_y = graph.get_tensor_by_name(graph_elements['pred_y'])
+                        target_idx = graph_elements['index']
+
+                        proxy_y = np.zeros((carry.shape[BATCH_INDEX], carry.shape[TIME_INDEX], 1))
+
+                        sess.run(init_op,
+                                 feed_dict={placeholder_X: carry, placeholder_y: proxy_y})
+                        next_steps = []
+                        while (True):
+                            try:
+                                next_step = sess.run([pred_y])[0]
+                                next_steps.append(next_step)
+                            except tf.errors.OutOfRangeError:
+                                break
+                        next_steps = np.vstack(next_steps)
+                        next_steps = np.expand_dims(next_steps[:, -1, :], axis=TIME_INDEX)
+                        predictions[:, i, target_idx] = next_steps.flatten()
+
+                    predict_i = np.expand_dims(predictions[:, i, :], axis=TIME_INDEX)
+                    carry = np.concatenate([carry, predict_i], axis=TIME_INDEX)
+                    carry = carry[:, 1:, :]
+
+            return np.squeeze(predictions)
+
+
+        else:
+            with tf.Session() as sess:
+                new_saver.restore(sess, tf.train.latest_checkpoint(self.model_path))
+                predictions = np.zeros((1,
+                                        nb_steps_out,
+                                        time_series.shape[1]))
+                for name, graph_elements in self.model_params['predict_tensor_names'].items():
+                    pred_y = graph.get_tensor_by_name(graph_elements['pred_y'])
+                    target_idx = graph_elements['index']
+
+                    test_X = time_series[:, target_idx]
+                    test_X = np.expand_dims(test_X, axis=BATCH_INDEX)
+                    test_X = np.expand_dims(test_X, axis=CHANNEL_INDEX)
+                    proxy_y = np.zeros((test_X.shape[BATCH_INDEX], test_X.shape[TIME_INDEX], 1))
+
+                    carry = test_X
+                    step_predictions = []
+                    for i in range(nb_steps_out):
+                        sess.run(init_op, feed_dict={placeholder_X: carry, placeholder_y: proxy_y})
+                        next_steps = []
+                        while (True):
+                            try:
+                                next_step = sess.run([pred_y])[0]
+                                next_steps.append(next_step)
+                            except tf.errors.OutOfRangeError:
+                                break
+                        next_steps = np.expand_dims(np.vstack(next_steps)[:, -1, :], axis=TIME_INDEX)
+                        step_predictions.append(next_steps)
+                        carry = np.concatenate([carry, next_steps], axis=TIME_INDEX)
+                        carry = carry[:, 1:, :]
+
+                    predict_name = np.concatenate(step_predictions, axis=TIME_INDEX)
+                    predict_name = np.squeeze(predict_name)
+                    predictions[:, :, target_idx] = predict_name
+
+            return np.squeeze(predictions)
 
 
     def save_model(self,

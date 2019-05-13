@@ -9,7 +9,7 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow_probability import distributions as tfd
 from tensorflow_probability import sts
-
+from pprint import pprint
 
 def plot_components(dates,
                     component_means_dict,
@@ -109,19 +109,21 @@ if __name__ == '__main__':
                                                              use_default_skills=True,
                                                              from_cache=True)
 
-    data = skill_ts.iloc[:, 0].values
+    data = skill_ts.iloc[:, -1].values
     training_data = data[:-num_forecast_steps]
 
     tf.reset_default_graph()
     model = build_model(observed_time_series=training_data)
-
+    pprint(model.parameters)
+    print(model.latent_size)
+    exit(0)
 
     with tf.variable_scope('sts_elbo', reuse=tf.AUTO_REUSE):
         elbo_loss, variational_posteriors = tfp.sts.build_factored_variational_loss(
             model,
             observed_time_series=training_data)
 
-    num_variational_steps = 2  # @param { isTemplate: true}
+    num_variational_steps = 26  # @param { isTemplate: true}
     num_variational_steps = int(num_variational_steps)
     train_vi = tf.train.AdamOptimizer(0.1).minimize(elbo_loss)
     with tf.Session() as sess:

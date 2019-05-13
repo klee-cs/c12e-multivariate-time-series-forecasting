@@ -70,27 +70,29 @@ class Jackson_GGN_DB(object):
                                           start_hour: int,
                                           end_hour: int,
                                           include_weekend: bool=False,
-                                          from_cache=False) -> pd.DataFrame:
+                                          from_cache=False,
+                                          work_set_list=None) -> pd.DataFrame:
         if from_cache:
             df = pd.read_csv(self.cache_path + '/summed_work_items_by_work_set.csv', index_col=0)
             df = df.set_index('received_ts_rounded')
             df.index = pd.to_datetime(df.index)
             return df
         else:
-            query = "SELECT wil_cs.received_ts_rounded, wil_cs.work_set_id, skill_nm.skill_display_nm, wil_cs.rec_item_count \
+            if work_set_list is not None:
+                work_set_list = ",".join(work_set_list)
+                query_filter = ' and work_set_id IN (%s) ' % work_set_list
+            else:
+                query_filter = ' '
+            query = "SELECT wil_cs.received_ts_rounded, wil_cs.work_set_id, wil_cs.rec_item_count \
             FROM (select received_ts_rounded, work_set_id, count(work_item_id) as rec_item_count \
             from work_item_log_cs \
             where received_ts_rounded >= '%s'\
-            and received_ts_rounded <= '%s'\
-            group by received_ts_rounded, work_set_id) as wil_cs \
-            LEFT JOIN \
-            (select distinct on (skill_display_nm, work_set_id) skill_display_nm, work_set_id \
-            from work_skill_log a JOIN work_set_log b \
-            on a.work_skill_id=b.work_skill_id) as skill_nm \
-            on skill_nm.work_set_id = wil_cs.work_set_id; " % (start_date, end_date)
+            and received_ts_rounded <= '%s'" % (start_date, end_date) \
+                    + query_filter \
+                    + "group by received_ts_rounded, work_set_id) as wil_cs;"
             df = pd.read_sql(query, self.connection)
             df.dropna(inplace=True)
-            df = df.pivot(index='received_ts_rounded', columns='skill_display_nm', values='rec_item_count')
+            df = df.pivot(index='received_ts_rounded', columns='work_set_id', values='rec_item_count')
             df_timestamps = pd.DataFrame(pd.date_range(start_date, end_date, freq='30T'), columns=['received_ts_rounded'])
             df = df_timestamps.join(df, how='left', on='received_ts_rounded')
             df = df.set_index('received_ts_rounded')
@@ -107,25 +109,31 @@ class Jackson_GGN_DB(object):
                                        start_hour: int,
                                        end_hour: int,
                                        include_weekend: bool =False,
-                                       use_default_skills: bool = False,
-                                       from_cache=False) -> pd.DataFrame:
+                                       from_cache=False,
+                                       skill_list=None) -> pd.DataFrame:
         if from_cache:
             df = pd.read_csv(self.cache_path + '/summed_work_items_by_skill.csv', index_col=0)
             df.index = pd.to_datetime(df.index)
             return df
         else:
+            if skill_list is not None:
+                skill_list = map(lambda x: "\'" + x + "\'", skill_list)
+                skill_list = ",".join(skill_list)
+                query_filter = ' WHERE skill_display_nm IN (%s) ' % skill_list
+            else:
+                query_filter = ''
             query = "select wil_cs.received_ts_rounded, skill_nm.skill_display_nm, sum(wil_cs.rec_item_count) as rec_item_count from \
             (select received_ts_rounded, work_set_id, count(work_item_id) as rec_item_count \
             from work_item_log_cs \
-            where received_ts_rounded >= '%s'\
-            and received_ts_rounded <= '%s'\
-            group by received_ts_rounded, work_set_id) as wil_cs\
-            LEFT JOIN\
+            where received_ts_rounded >= '%s' \
+            and received_ts_rounded <= '%s' \
+            group by received_ts_rounded, work_set_id) as wil_cs \
+            LEFT JOIN \
             (select distinct on (skill_display_nm, work_set_id) skill_display_nm, work_set_id\
-            from work_skill_log a JOIN work_set_log b \
-            on a.work_skill_id=b.work_skill_id) as skill_nm \
-            on skill_nm.work_set_id = wil_cs.work_set_id\
-            group by wil_cs.received_ts_rounded, skill_nm.skill_display_nm;" % (start_date, end_date)
+            from work_skill_log a JOIN work_set_log b on a.work_skill_id=b.work_skill_id" % (start_date, end_date) \
+                    + query_filter \
+                    + ") as skill_nm on skill_nm.work_set_id = wil_cs.work_set_id \
+                    group by wil_cs.received_ts_rounded, skill_nm.skill_display_nm;"
             df = pd.read_sql(query, self.connection)
             df.dropna(inplace=True)
             df = df.pivot(index='received_ts_rounded', columns='skill_display_nm', values='rec_item_count')
@@ -135,11 +143,39 @@ class Jackson_GGN_DB(object):
             del df_timestamps
             df = df.fillna(value=0)
             df = self.extract_subset_data(df, start_hour, end_hour, include_weekend=include_weekend)
-            if use_default_skills:
-                print(self.default_skills)
-                df = df[self.default_skills]
             df.to_csv(self.cache_path + '/summed_work_items_by_skill.csv')
             return df
+
+    def top_n(self, work_set_level=False, percent_=90):
+        """
+        work_set_level: Default is False and returns work_skill level. if set to True, returns work_set level
+        percent_ : cumulative % of work_item count we are
+
+        """
+
+        if work_set_level:
+            pareto_df = pd.read_sql(
+                'select work_set_id, count(work_item_id) as rec_item_count from work_item_log_cs group by  work_set_id;',
+                self.connection)
+            pareto_df = pareto_df.sort_values(by='rec_item_count', ascending=False)
+            pareto_df['work_set_id'] = pareto_df.work_set_id.astype('str')
+            pareto_df['Percent_vol'] = pareto_df['rec_item_count'] * 100 / pareto_df['rec_item_count'].sum()
+            pareto_df["cumpercentage"] = pareto_df["Percent_vol"].cumsum()
+            return pareto_df[pareto_df.cumpercentage < percent_]['work_set_id'].to_list()
+        else:
+            pareto_df = pd.read_sql('select skill_nm.skill_display_nm, sum(wil_cs.rec_item_count) as rec_item_count from \
+                    (select received_ts_rounded, work_set_id, count(work_item_id) as rec_item_count \
+                    from work_item_log_cs group by received_ts_rounded, work_set_id) as wil_cs \
+                    LEFT JOIN\
+                    (select distinct on (skill_display_nm, work_set_id) skill_display_nm, work_set_id \
+                    from work_skill_log a JOIN work_set_log b \
+                    on a.work_skill_id=b.work_skill_id) as skill_nm \
+                    on skill_nm.work_set_id = wil_cs.work_set_id\
+                    group by skill_nm.skill_display_nm;', self.connection)
+            pareto_df['Percent_vol'] = pareto_df['rec_item_count'] * 100 / pareto_df['rec_item_count'].sum()
+            pareto_df["cumpercentage"] = pareto_df["Percent_vol"].cumsum()
+            return pareto_df[pareto_df.cumpercentage < percent_]['skill_display_nm'].to_list()
+
 
     @classmethod
     def extract_subset_data(self,
@@ -230,14 +266,23 @@ class Jackson_GGN_DB(object):
 
 if __name__ == '__main__':
     jackson_ggn_db = Jackson_GGN_DB(cache_path='./data')
-    skill_ts = jackson_ggn_db.get_summed_work_items_by_skill(start_date='2011-12-28',
+    top90_work_sets = jackson_ggn_db.top_n(work_set_level=True, percent_=90)
+    work_set_ts = jackson_ggn_db.get_summed_work_items_by_work_set(start_date='2018-01-01',
                                                              end_date='2019-03-23',
-                                                             start_hour=6,
-                                                             end_hour=11,
+                                                             start_hour=0,
+                                                             end_hour=24,
                                                              include_weekend=False,
-                                                             use_default_skills=True,
-                                                             from_cache=False)
-    date_ranges = Jackson_GGN_DB.find_active_date_ranges(skill_ts)
-    skill_ts.plot()
-    plt.show()
+                                                             from_cache=False,
+                                                             work_set_list=top90_work_sets)
+
+
+    # top90_skills = jackson_ggn_db.top_n(work_set_level=False, percent_=90)
+    # skill_ts = jackson_ggn_db.get_summed_work_items_by_skill(start_date='2018-01-01',
+    #                                                          end_date='2019-03-23',
+    #                                                          start_hour=0,
+    #                                                          end_hour=24,
+    #                                                          include_weekend=False,
+    #                                                          from_cache=False,
+    #                                                          skill_list=top90_skills)
+
     jackson_ggn_db.close()

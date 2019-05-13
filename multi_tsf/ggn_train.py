@@ -5,7 +5,7 @@ from multi_tsf.db_reader import Jackson_GGN_DB
 
 
 def main():
-    epochs = 1
+    epochs = 3000
     batch_size = 128
     conditional = False
     nb_dilation_factors = [1, 2, 4, 8, 16, 32, 64, 128]
@@ -21,8 +21,8 @@ def main():
                                                              start_hour=0,
                                                              end_hour=24,
                                                              include_weekend=False,
-                                                             use_default_skills=True,
-                                                             from_cache=False)
+                                                             from_cache=True,
+                                                             skill_list=jackson_ggn_db.default_skills)
 
 
     skill_ts = pd.DataFrame(skill_ts.iloc[:, 0:3])
@@ -48,6 +48,7 @@ def main():
 
     wavenet.fit(forecast_data, epochs=epochs)
     results_df = wavenet.evaluate(forecast_data, set='Validation')
+    predictions = wavenet.predict(forecast_data.reshaped_periods['Test']['features'][0, :, :], nb_steps_out=nb_steps_out)
 
     jackson_ggn_db.close()
 

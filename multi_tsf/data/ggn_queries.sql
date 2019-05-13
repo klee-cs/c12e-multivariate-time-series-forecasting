@@ -220,3 +220,10 @@ left join
         on A.work_set_id = B.work_set_id) t2 
         
 on t1.time_stamp = t2.received_ts_rounded ;
+
+
+--------------Selecting skills from list-------------
+select distinct on (skill_display_nm, work_set_id) skill_display_nm, work_set_id from work_skill_log a
+JOIN work_set_log b on a.work_skill_id=b.work_skill_id
+where skill_display_nm IN ('POS List Fees','Collection Follow Up','BM Follow Up Required')
+

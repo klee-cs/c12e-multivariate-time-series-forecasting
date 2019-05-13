@@ -149,7 +149,6 @@ class ForecastTimeSeries(object):
             min = date_times[i].minute
             if hour == predict_hour and min == 0:
                 if (i - nb_steps_in) >= 0 and (i + nb_steps_out) < ts_df.shape[0]:
-
                     feature = time_series[i - nb_steps_in:i, :]
                     target = time_series[i:i + nb_steps_out, :]
                     features.append(feature)
