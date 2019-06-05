@@ -5,6 +5,7 @@ import os
 import matplotlib.pyplot as plt
 from typing import List, Tuple
 from datetime import datetime
+import pickle
 
 class Jackson_GGN_DB(object):
 
@@ -70,37 +71,29 @@ class Jackson_GGN_DB(object):
                                           start_hour: int,
                                           end_hour: int,
                                           include_weekend: bool=False,
-                                          from_cache=False,
                                           work_set_list=None) -> pd.DataFrame:
-        if from_cache:
-            df = pd.read_csv(self.cache_path + '/summed_work_items_by_work_set.csv', index_col=0)
-            df = df.set_index('received_ts_rounded')
-            df.index = pd.to_datetime(df.index)
-            return df
+        if work_set_list is not None:
+            work_set_list = ",".join(work_set_list)
+            query_filter = ' and work_set_id IN (%s) ' % work_set_list
         else:
-            if work_set_list is not None:
-                work_set_list = ",".join(work_set_list)
-                query_filter = ' and work_set_id IN (%s) ' % work_set_list
-            else:
-                query_filter = ' '
-            query = "SELECT wil_cs.received_ts_rounded, wil_cs.work_set_id, wil_cs.rec_item_count \
-            FROM (select received_ts_rounded, work_set_id, count(work_item_id) as rec_item_count \
-            from work_item_log_cs \
-            where received_ts_rounded >= '%s'\
-            and received_ts_rounded <= '%s'" % (start_date, end_date) \
-                    + query_filter \
-                    + "group by received_ts_rounded, work_set_id) as wil_cs;"
-            df = pd.read_sql(query, self.connection)
-            df.dropna(inplace=True)
-            df = df.pivot(index='received_ts_rounded', columns='work_set_id', values='rec_item_count')
-            df_timestamps = pd.DataFrame(pd.date_range(start_date, end_date, freq='30T'), columns=['received_ts_rounded'])
-            df = df_timestamps.join(df, how='left', on='received_ts_rounded')
-            df = df.set_index('received_ts_rounded')
-            del df_timestamps
-            df = df.fillna(value=0)
-            df = self.extract_subset_data(df, start_hour, end_hour, include_weekend=include_weekend)
-            df.to_csv(self.cache_path + '/summed_work_items_by_work_set.csv')
-            return df
+            query_filter = ' '
+        query = "SELECT wil_cs.received_ts_rounded, wil_cs.work_set_id, wil_cs.rec_item_count \
+        FROM (select received_ts_rounded, work_set_id, count(work_item_id) as rec_item_count \
+        from work_item_log_cs \
+        where received_ts_rounded >= '%s'\
+        and received_ts_rounded <= '%s'" % (start_date, end_date) \
+                + query_filter \
+                + "group by received_ts_rounded, work_set_id) as wil_cs;"
+        df = pd.read_sql(query, self.connection)
+        df.dropna(inplace=True)
+        df = df.pivot(index='received_ts_rounded', columns='work_set_id', values='rec_item_count')
+        df_timestamps = pd.DataFrame(pd.date_range(start_date, end_date, freq='30T'), columns=['received_ts_rounded'])
+        df = df_timestamps.join(df, how='left', on='received_ts_rounded')
+        df = df.set_index('received_ts_rounded')
+        del df_timestamps
+        df = df.fillna(value=0)
+        df = self.extract_subset_data(df, start_hour, end_hour, include_weekend=include_weekend)
+        return df
 
 
     def get_summed_work_items_by_skill(self,
@@ -109,73 +102,139 @@ class Jackson_GGN_DB(object):
                                        start_hour: int,
                                        end_hour: int,
                                        include_weekend: bool =False,
-                                       from_cache=False,
                                        skill_list=None) -> pd.DataFrame:
-        if from_cache:
-            df = pd.read_csv(self.cache_path + '/summed_work_items_by_skill.csv', index_col=0)
-            df.index = pd.to_datetime(df.index)
-            return df
+        if skill_list is not None:
+            skill_list = map(lambda x: "\'" + x + "\'", skill_list)
+            skill_list = ",".join(skill_list)
+            query_filter = ' WHERE skill_display_nm IN (%s) ' % skill_list
         else:
-            if skill_list is not None:
-                skill_list = map(lambda x: "\'" + x + "\'", skill_list)
-                skill_list = ",".join(skill_list)
-                query_filter = ' WHERE skill_display_nm IN (%s) ' % skill_list
-            else:
-                query_filter = ''
-            query = "select wil_cs.received_ts_rounded, skill_nm.skill_display_nm, sum(wil_cs.rec_item_count) as rec_item_count from \
-            (select received_ts_rounded, work_set_id, count(work_item_id) as rec_item_count \
-            from work_item_log_cs \
-            where received_ts_rounded >= '%s' \
-            and received_ts_rounded <= '%s' \
-            group by received_ts_rounded, work_set_id) as wil_cs \
-            LEFT JOIN \
-            (select distinct on (skill_display_nm, work_set_id) skill_display_nm, work_set_id\
-            from work_skill_log a JOIN work_set_log b on a.work_skill_id=b.work_skill_id" % (start_date, end_date) \
-                    + query_filter \
-                    + ") as skill_nm on skill_nm.work_set_id = wil_cs.work_set_id \
-                    group by wil_cs.received_ts_rounded, skill_nm.skill_display_nm;"
-            df = pd.read_sql(query, self.connection)
-            df.dropna(inplace=True)
-            df = df.pivot(index='received_ts_rounded', columns='skill_display_nm', values='rec_item_count')
-            df_timestamps = pd.DataFrame(pd.date_range(start_date, end_date, freq='30T'), columns=['received_ts_rounded'])
-            df = df_timestamps.join(df, how='left', on='received_ts_rounded')
-            df = df.set_index('received_ts_rounded')
-            del df_timestamps
-            df = df.fillna(value=0)
-            df = self.extract_subset_data(df, start_hour, end_hour, include_weekend=include_weekend)
-            df.to_csv(self.cache_path + '/summed_work_items_by_skill.csv')
-            return df
+            query_filter = ''
+        query = "select wil_cs.received_ts_rounded, skill_nm.skill_display_nm, sum(wil_cs.rec_item_count) as rec_item_count from \
+        (select received_ts_rounded, work_set_id, count(work_item_id) as rec_item_count \
+        from work_item_log_cs \
+        where received_ts_rounded >= '%s' \
+        and received_ts_rounded <= '%s' \
+        group by received_ts_rounded, work_set_id) as wil_cs \
+        LEFT JOIN \
+        (select distinct on (skill_display_nm, work_set_id) skill_display_nm, work_set_id\
+        from work_skill_log a JOIN work_set_log b on a.work_skill_id=b.work_skill_id" % (start_date, end_date) \
+                + query_filter \
+                + ") as skill_nm on skill_nm.work_set_id = wil_cs.work_set_id \
+                group by wil_cs.received_ts_rounded, skill_nm.skill_display_nm;"
+        df = pd.read_sql(query, self.connection)
+        df.dropna(inplace=True)
+        df = df.pivot(index='received_ts_rounded', columns='skill_display_nm', values='rec_item_count')
+        df_timestamps = pd.DataFrame(pd.date_range(start_date, end_date, freq='30T'), columns=['received_ts_rounded'])
+        df = df_timestamps.join(df, how='left', on='received_ts_rounded')
+        df = df.set_index('received_ts_rounded')
+        del df_timestamps
+        df = df.fillna(value=0)
+        df = self.extract_subset_data(df, start_hour, end_hour, include_weekend=include_weekend)
+        return df
 
-    def top_n(self, work_set_level=False, percent_=90):
+
+    def filter_active_work_sets(self,
+                                start_date,
+                                end_date,
+                                active_cutoff,
+                                percent_cutoff,
+                                from_cache=False):
+        '''
+
+        :param start_date:
+        :param end_date:
+        :param active_cutoff:
+        :param percent_cutoff:
+        :return:
+        '''
+        if from_cache:
+            master_df = pd.read_csv(self.cache_path + '/top_volume_active_work_sets.csv', index_col=0)
+            master_df.index = pd.to_datetime(master_df.index)
+            return master_df
+        else:
+            pivot_df = self.get_summed_work_items_by_work_set(start_date=start_date,
+                                                              end_date=end_date,
+                                                              start_hour=6,
+                                                              end_hour=23,
+                                                              include_weekend=False,
+                                                              work_set_list=None)
+            active_date_ranges = self.find_active_date_ranges(pivot_df)
+            active_work_sets = []
+            for adr in active_date_ranges:
+                if adr['end_date'] >= pd.Timestamp(active_cutoff):
+                    active_work_sets.append(adr['name'])
+            top_volume_active_work_sets = self.top_n(start_date,
+                                                     end_date,
+                                                     work_set_level=True,
+                                                     work_set_list=active_work_sets,
+                                                     percent_=percent_cutoff)
+            pickle.dump(top_volume_active_work_sets, open(self.cache_path + '/top_volume_work_sets.p', 'wb+'))
+            master_df = pivot_df[top_volume_active_work_sets]
+            master_df.to_csv(self.cache_path + '/top_volume_active_work_sets.csv')
+            return master_df
+
+
+
+    def plot_pareto(self, top_n):
+        pareto_df = self.pareto_df
+        pareto_df['work_set_id'] = pareto_df.work_set_id.astype('str')
+        plt.rcParams["figure.figsize"] = (30, 7)
+        fig, ax = plt.subplots()
+        ax.bar(pareto_df.head(top_n).work_set_id, pareto_df.head(top_n)["percent_vol"], color="C0", width=0.1)
+        plt.xticks(rotation=90, fontsize=15)
+        plt.ylabel('Percentage total volume', fontsize=20)
+        plt.title('Top ' + str(top_n) + ' work sets', fontsize=25)
+        ax2 = ax.twinx()
+        ax2.plot(pareto_df.head(top_n).work_set_id, pareto_df.head(top_n)["cumpercentage"], color="r", marker="D", ms=7)
+        # ax2.yaxis.set_major_formatter(plt.PercentFormatter())
+        plt.savefig('Pareto_work_sets.pdf')
+
+
+    def top_n(self,
+              start_date,
+              end_date,
+              work_set_level=False,
+              work_set_list=None,
+              percent_=90):
         """
         work_set_level: Default is False and returns work_skill level. if set to True, returns work_set level
-        percent_ : cumulative % of work_item count we are
-
+        percent_ : cumulative % of work_item count we are interested in
         """
 
         if work_set_level:
+
             pareto_df = pd.read_sql(
-                'select work_set_id, count(work_item_id) as rec_item_count from work_item_log_cs group by  work_set_id;',
+                "select work_set_id, count(work_item_id) as rec_item_count from work_item_log_cs \
+                where received_ts_rounded >= '%s' \
+                and received_ts_rounded <= '%s' \
+                group by work_set_id;" % (start_date, end_date),
                 self.connection)
+            if work_set_list is not None:
+                pareto_df = pareto_df[pareto_df['work_set_id'].isin(work_set_list)]
             pareto_df = pareto_df.sort_values(by='rec_item_count', ascending=False)
-            pareto_df['work_set_id'] = pareto_df.work_set_id.astype('str')
-            pareto_df['Percent_vol'] = pareto_df['rec_item_count'] * 100 / pareto_df['rec_item_count'].sum()
-            pareto_df["cumpercentage"] = pareto_df["Percent_vol"].cumsum()
+            # pareto_df['work_set_id'] = pareto_df.work_set_id.astype('str')
+            pareto_df['percent_vol'] = pareto_df['rec_item_count'] * 100 / pareto_df['rec_item_count'].sum()
+            pareto_df["cumpercentage"] = pareto_df["percent_vol"].cumsum()
+            self.pareto_df = pareto_df
+            self.pareto_df.to_csv(self.cache_path + '/pareto_df.csv')
             return pareto_df[pareto_df.cumpercentage < percent_]['work_set_id'].to_list()
         else:
-            pareto_df = pd.read_sql('select skill_nm.skill_display_nm, sum(wil_cs.rec_item_count) as rec_item_count from \
+
+            pareto_df = pd.read_sql("select skill_nm.skill_display_nm, sum(wil_cs.rec_item_count) as rec_item_count from \
                     (select received_ts_rounded, work_set_id, count(work_item_id) as rec_item_count \
-                    from work_item_log_cs group by received_ts_rounded, work_set_id) as wil_cs \
+                    from work_item_log_cs \
+                    where received_ts_rounded >= '%s' \
+                    and received_ts_rounded <= '%s' \
+                    group by received_ts_rounded, work_set_id) as wil_cs \
                     LEFT JOIN\
                     (select distinct on (skill_display_nm, work_set_id) skill_display_nm, work_set_id \
                     from work_skill_log a JOIN work_set_log b \
                     on a.work_skill_id=b.work_skill_id) as skill_nm \
                     on skill_nm.work_set_id = wil_cs.work_set_id\
-                    group by skill_nm.skill_display_nm;', self.connection)
+                    group by skill_nm.skill_display_nm;" % (start_date, end_date), self.connection)
             pareto_df['Percent_vol'] = pareto_df['rec_item_count'] * 100 / pareto_df['rec_item_count'].sum()
-            pareto_df["cumpercentage"] = pareto_df["Percent_vol"].cumsum()
+            pareto_df["cumpercentage"] = pareto_df["percent_vol"].cumsum()
             return pareto_df[pareto_df.cumpercentage < percent_]['skill_display_nm'].to_list()
-
 
     @classmethod
     def extract_subset_data(self,
@@ -208,30 +267,46 @@ class Jackson_GGN_DB(object):
         return df
 
     @classmethod
-    def find_active_date_ranges(self, master_df: pd.DataFrame) -> List[Tuple]:
+    def find_active_date_ranges(cls, df: pd.DataFrame) -> List[dict]:
+        """
+        :param df: DataFrame returned by get_summed_work_items_by_skill() or get_summed_work_items_by_work_set()
+        :return: start and end indices and dates, and length of activity for each skill or work item in input DataFrame.
+        If skill or work item has no non-zero entries, returns None for active_length.
+        """
         active_date_ranges = []
-        start_idx = None
-        start_date = None
-        end_idx = None
-        end_date = None
-        for col in range(master_df.shape[1]):
-            # find start time
-            for idx, value in enumerate(master_df.iloc[:, col]):
-                if not (value is None or value == 0 or np.isnan(value)):
-                    start_idx = idx
-                    start_date = master_df.iloc[:, col].index[start_idx]
-                    break
-            # find end time
-            for idx, value in enumerate(master_df.iloc[::-1, col]):
-                if not (value is None or value == 0 or np.isnan(value)):
-                    end_idx = master_df.shape[0] - idx - 1
-                    end_date = master_df.iloc[:, col].index[end_idx]
-                    break
-            active_date_ranges.append((start_idx, start_date, end_idx, end_date))
+        names = df.columns.tolist()
+
+        # loop through each skill or work set
+        for col in range(df.shape[1]):
+            d = {'name': names[col],
+                 'idx': col}
+            ts = df.iloc[:, col]
+            ts_non_zero = ts.loc[ts > 0]
+
+            # find start date
+            if ts_non_zero.empty:
+                d['start_date'] = pd.Timestamp('1900-01-01')
+            else:
+                d['start_date'] = ts_non_zero.index[0]
+
+            # find end date
+            if ts_non_zero.empty:
+                d['end_date'] = pd.Timestamp('1900-01-01')
+            else:
+                d['end_date'] = ts_non_zero.index[-1]
+
+            # find active length
+            if d['end_date'] is not None and d['start_date'] is not None:
+                d['active_length'] = d['end_date'] - d['start_date']
+            else:
+                d['active_length'] = None
+
+            active_date_ranges.append(d)
+
         return active_date_ranges
 
     @classmethod
-    def rank_sparsity(self, master_df: pd.DataFrame, active_date_ranges: List[Tuple]) -> pd.DataFrame:
+    def rank_sparsity(cls, master_df: pd.DataFrame, active_date_ranges: List[Tuple]) -> pd.DataFrame:
         sparsities = []
         num_skills = master_df.shape[1]
         for col in range(num_skills):
@@ -244,7 +319,7 @@ class Jackson_GGN_DB(object):
         return ranked_sparsity.sort_values('sparsity')
 
     @classmethod
-    def plot_skill_ts(ts, skill_name):
+    def plot_skill_ts(cls, ts, skill_name):
         start_date = ts.index[0]
         end_date = ts.index[-1]
         date_range = pd.DataFrame(pd.date_range(start_date, end_date, freq='30T'), columns=['timestamps'])
@@ -266,23 +341,14 @@ class Jackson_GGN_DB(object):
 
 if __name__ == '__main__':
     jackson_ggn_db = Jackson_GGN_DB(cache_path='./data')
-    top90_work_sets = jackson_ggn_db.top_n(work_set_level=True, percent_=90)
-    work_set_ts = jackson_ggn_db.get_summed_work_items_by_work_set(start_date='2018-01-01',
-                                                             end_date='2019-03-23',
-                                                             start_hour=0,
-                                                             end_hour=24,
-                                                             include_weekend=False,
-                                                             from_cache=False,
-                                                             work_set_list=top90_work_sets)
 
-
-    # top90_skills = jackson_ggn_db.top_n(work_set_level=False, percent_=90)
-    # skill_ts = jackson_ggn_db.get_summed_work_items_by_skill(start_date='2018-01-01',
-    #                                                          end_date='2019-03-23',
-    #                                                          start_hour=0,
-    #                                                          end_hour=24,
-    #                                                          include_weekend=False,
-    #                                                          from_cache=False,
-    #                                                          skill_list=top90_skills)
+    master_df = jackson_ggn_db.filter_active_work_sets(start_date='2017-01-01',
+                                                       end_date='2019-03-23',
+                                                       active_cutoff='2019-01-01',
+                                                       percent_cutoff=90,
+                                                       from_cache=True)
+    master_df.iloc[:, 150].plot()
+    plt.show()
+    # jackson_ggn_db.plot_pareto(top_n=600)
 
     jackson_ggn_db.close()

@@ -255,7 +255,6 @@ class WaveNetForecastingModel(object):
 
         try:
             shutil.rmtree(self.model_path)
-            shutil.rmtree(self.model_path)
         except FileNotFoundError as fnf_error:
             pass
         tf.random.set_random_seed(22943)

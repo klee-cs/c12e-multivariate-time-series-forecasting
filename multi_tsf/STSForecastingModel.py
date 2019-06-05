@@ -106,8 +106,8 @@ if __name__ == '__main__':
                                                              start_hour=0,
                                                              end_hour=24,
                                                              include_weekend=False,
-                                                             use_default_skills=True,
-                                                             from_cache=True)
+                                                             from_cache=True,
+                                                             skill_list=jackson_ggn_db.default_skills)
 
     data = skill_ts.iloc[:, -1].values
     training_data = data[:-num_forecast_steps]
