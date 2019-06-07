@@ -8,6 +8,7 @@ from typing import List
 from pprint import pprint
 from tqdm import tqdm
 import json
+import matplotlib.pyplot as plt
 
 BATCH_INDEX = 0
 TIME_INDEX = 1
@@ -544,5 +545,135 @@ class WaveNetForecastingModel(object):
         return wavenet_forecasting_model
 
 
+################################## Estimator Implementation ###############################
+
+def train_test_split(path: str,
+                     cutoff_date: str):
+    pass
+
+def create_wavenet(data_X: tf.Tensor,
+                   data_y: tf.Tensor,
+                   nb_filters: int,
+                   nb_dilation_factors: List[int],
+                   l2_regularization: float):
+
+    nb_layers = len(nb_dilation_factors)
+    regularizer = tf.keras.regularizers.l2(l=l2_regularization)
+    initializer = tf.keras.initializers.he_normal()
+    activation = tf.keras.activations.linear
+    leaky_relu = tf.keras.layers.LeakyReLU()
+    carry = data_X
+
+    # Skip connection
+    skip_connection = tf.keras.layers.Conv1D(filters=nb_filters,
+                                             kernel_size=1,
+                                             padding='same',
+                                             activation=activation,
+                                             kernel_regularizer=regularizer,
+                                             kernel_initializer=initializer,
+                                             kernel_constraint=None)
+
+    dcc_layer1 = tf.keras.layers.Conv1D(filters=nb_filters,
+                                        kernel_size=2,
+                                        strides=1,
+                                        padding='causal',
+                                        dilation_rate=1,
+                                        activation=activation,
+                                        kernel_regularizer=regularizer,
+                                        kernel_initializer=initializer,
+                                        kernel_constraint=None)
+    with tf.name_scope('Initial-Layer'):
+        carry = tf.keras.layers.add([leaky_relu(skip_connection(carry)), leaky_relu(dcc_layer1(carry))])
+    for i in range(nb_layers):
+        with tf.name_scope('Dilated-Stack'):
+            dcc_layer = tf.keras.layers.Conv1D(filters=nb_filters,
+                                               kernel_size=2,
+                                               strides=1,
+                                               padding='causal',
+                                               dilation_rate=nb_dilation_factors[i],
+                                               activation=activation,
+                                               kernel_regularizer=regularizer,
+                                               kernel_initializer=initializer,
+                                               kernel_constraint=None)
+            # Residual Connections
+            carry = tf.keras.layers.add([leaky_relu(dcc_layer(carry)), carry])
+
+    with tf.name_scope('Final-Layer'):
+        final_dcc_layer = tf.keras.layers.Conv1D(filters=1,
+                                                 kernel_size=1,
+                                                 strides=1,
+                                                 padding='same',
+                                                 activation=activation,
+                                                 kernel_regularizer=regularizer,
+                                                 kernel_initializer=initializer,
+                                                 kernel_constraint=None)
+        pred_y = leaky_relu(final_dcc_layer(carry))
+
+    loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(pred_y, data_y), name='loss')
+    naive_loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(data_X, data_y))
+    tf.summary.scalar(name='MAE', tensor=loss)
+    tf.summary.scalar(name='Naive-MAE', tensor=naive_loss)
+    return loss, pred_y
 
 
+
+def train_input_fn(path: str,
+                   target_index: int,
+                   forecast_horizon: int,
+                   num_epochs: int):
+    ts_df = pd.read_csv(path, index_col=0)
+    time_series = ts_df.values
+    seq_x = time_series[:-forecast_horizon, target_index].reshape(-1, 1)
+    seq_y = time_series[forecast_horizon:, target_index].reshape(-1, 1)
+    seq_x = np.expand_dims(seq_x, axis=0)
+    seq_y = np.expand_dims(seq_y, axis=0)
+    dataset = tf.data.Dataset.from_tensor_slices((seq_x, seq_y)).repeat(num_epochs).batch(batch_size=1)
+    return dataset
+
+
+def wavenet_model_fn(features: tf.Tensor,
+                     labels: tf.Tensor,
+                     mode: str,
+                     params: dict):
+    if (mode == tf.estimator.ModeKeys.TRAIN or mode == tf.estimator.ModeKeys.EVAL):
+        loss, pred_y = create_wavenet(features,
+                                      labels,
+                                      params['nb_filters'],
+                                      params['nb_dilation_factors'],
+                                      params['l2_regularization'])
+    else:
+        loss = None
+    if mode == tf.estimator.ModeKeys.TRAIN:
+        optimizer = tf.train.AdamOptimizer(params['learning_rate'], name='optimizer')
+        train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step())
+    else:
+        train_op = None
+    if mode == tf.estimator.ModeKeys.PREDICT:
+        predictions = pred_y # If we are predicting calculate the predictions
+    else:
+        predictions = None
+
+    return tf.estimator.EstimatorSpec(
+        mode=mode,
+        predictions=predictions,
+        loss=loss,
+        train_op=train_op)
+
+
+
+if __name__ == '__main__':
+    model_save_path = './estimator_test'
+
+    wavenet = tf.estimator.Estimator(model_fn=wavenet_model_fn,
+                                     model_dir=model_save_path,
+                                     params={
+                                         'nb_filters': 16,
+                                         'nb_dilation_factors': [1, 2, 4, 8, 16, 32, 64, 128],
+                                         'learning_rate': 1e-3,
+                                         'l2_regularization': 0.1
+                                     })
+
+    wavenet.train(input_fn=lambda: train_input_fn(path='./data/top_volume_active_work_sets.csv',
+                                                  target_index=0,
+                                                  forecast_horizon=1,
+                                                  num_epochs=1000))
