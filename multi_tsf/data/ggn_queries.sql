@@ -159,4 +159,4 @@ from work_item_log_cs where received_ts_rounded >= '2017-01-01'
 group by work_set_id, received_ts_rounded) ref 
 on curr.past_sample_date = DATE(ref.received_ts_rounded); 
 
-
+select * from interval_grouped_work_items limit 10;

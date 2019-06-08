@@ -246,7 +246,28 @@ def generate_stats(trueY, forecastY, missing=True):
         return mape, mase, rmse
 
 
+####################### Estimator Implementation ######################
 
+def train_val_test_split(data_path: str,
+                         save_path: str,
+                         test_cutoff_date: str,
+                         train_size: float = 0.8):
+
+    ts_df = pd.read_csv(data_path, index_col=0)
+    ts_df = ts_df.sort_index()
+    ts_df.index = pd.to_datetime(ts_df.index)
+    test_cutoff_idx = ts_df.index.get_loc(test_cutoff_date).start
+    val_cutoff_idx = math.ceil(test_cutoff_idx * train_size)
+
+    train_df = ts_df.iloc[:test_cutoff_idx, :]
+    test_df = ts_df.iloc[test_cutoff_idx:, :]
+    val_df = train_df.iloc[val_cutoff_idx:, :]
+    train_df = ts_df.iloc[:val_cutoff_idx, :]
+    train_df.to_csv(save_path + '/train.csv')
+    val_df.to_csv(save_path + '/val.csv')
+    test_df.to_csv(save_path + '/test.csv')
+
+    return train_df, val_df, test_df
 
 
 

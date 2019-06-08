@@ -7,32 +7,10 @@ from typing import List, Tuple
 from datetime import datetime
 import pickle
 
+
 class Jackson_GGN_DB(object):
 
     def __init__(self, cache_path: str) -> None:
-        self.default_skills = ['pp-clip',
-                               'pp-blank',
-                               'fullpageentry',
-                               'inforce',
-                               'nbforms',
-                               'clip',
-                               'marginnote',
-                               'POS Annuity Disbursement File Review Manual',
-                               'POS Disbursement Validation Manual',
-                               'bmfe',
-                               'BM PRODUCER OF RECORD CHANGES',
-                               'LOI Send to File QC Manual',
-                               'POS Beneficiary Change',
-                               'inforceclaims',
-                               'POS Annuity Disbursement Process Manual',
-                               'OPS Claims Annuity',
-                               'POS Follow Up Required',
-                               'POS Simple Resolution',
-                               'POS Overnight Prep',
-                               'POS Ownership Change',
-                               'POS TP Auth - VA VUL',
-                               'POS Trade Work around',
-                               'BM Electronic Funds Transfer']
         try:
             self.cache_path = cache_path
             os.makedirs(self.cache_path, exist_ok=True)
@@ -70,38 +48,39 @@ class Jackson_GGN_DB(object):
                                           end_date: str,
                                           start_hour: int,
                                           end_hour: int,
-                                          include_weekend: bool=False,
+                                          include_weekend: bool = False,
                                           work_set_list=None) -> pd.DataFrame:
         if work_set_list is not None:
             work_set_list = ",".join(work_set_list)
             query_filter = ' and work_set_id IN (%s) ' % work_set_list
         else:
             query_filter = ' '
-        query = "SELECT wil_cs.received_ts_rounded, wil_cs.work_set_id, wil_cs.rec_item_count \
-        FROM (select received_ts_rounded, work_set_id, count(work_item_id) as rec_item_count \
-        from work_item_log_cs \
-        where received_ts_rounded >= '%s'\
-        and received_ts_rounded <= '%s'" % (start_date, end_date) \
-                + query_filter \
-                + "group by received_ts_rounded, work_set_id) as wil_cs;"
+        query = "SELECT start_timestamp , work_set_id_mapped, actual_item_count, predicted_item_count \
+                from interval_grouped_work_items where start_timestamp >= '%s' and start_timestamp <= '%s'"\
+                % (start_date, end_date) + query_filter
         df = pd.read_sql(query, self.connection)
         df.dropna(inplace=True)
-        df = df.pivot(index='received_ts_rounded', columns='work_set_id', values='rec_item_count')
-        df_timestamps = pd.DataFrame(pd.date_range(start_date, end_date, freq='30T'), columns=['received_ts_rounded'])
-        df = df_timestamps.join(df, how='left', on='received_ts_rounded')
-        df = df.set_index('received_ts_rounded')
-        del df_timestamps
-        df = df.fillna(value=0)
-        df = self.extract_subset_data(df, start_hour, end_hour, include_weekend=include_weekend)
-        return df
 
+        def pivot_data(df, col):
+            df = df.pivot(index='start_timestamp', columns='work_set_id_mapped', values=col)
+            df_timestamps = pd.DataFrame(pd.date_range(start_date, end_date, freq='30T'), columns=['start_timestamp'])
+            df = df_timestamps.join(df, how='left', on='start_timestamp')
+            df = df.set_index('start_timestamp')
+            del df_timestamps
+            df = df.fillna(value=0)
+            df = self.extract_subset_data(df, start_hour, end_hour, include_weekend=include_weekend)
+            return df
+
+        df_actual = pivot_data(df, 'actual_item_count')
+        df_predicted = pivot_data(df, 'predicted_item_count')  ## "JACKSON PREDICTION"
+        return df_actual, df_predicted
 
     def get_summed_work_items_by_skill(self,
                                        start_date: str,
                                        end_date: str,
                                        start_hour: int,
                                        end_hour: int,
-                                       include_weekend: bool =False,
+                                       include_weekend: bool = False,
                                        skill_list=None) -> pd.DataFrame:
         if skill_list is not None:
             skill_list = map(lambda x: "\'" + x + "\'", skill_list)
@@ -132,21 +111,12 @@ class Jackson_GGN_DB(object):
         df = self.extract_subset_data(df, start_hour, end_hour, include_weekend=include_weekend)
         return df
 
-
     def filter_active_work_sets(self,
                                 start_date,
                                 end_date,
                                 active_cutoff,
                                 percent_cutoff,
                                 from_cache=False):
-        '''
-
-        :param start_date:
-        :param end_date:
-        :param active_cutoff:
-        :param percent_cutoff:
-        :return:
-        '''
         if from_cache:
             master_df = pd.read_csv(self.cache_path + '/top_volume_active_work_sets.csv', index_col=0)
             master_df.index = pd.to_datetime(master_df.index)
@@ -173,8 +143,6 @@ class Jackson_GGN_DB(object):
             master_df.to_csv(self.cache_path + '/top_volume_active_work_sets.csv')
             return master_df
 
-
-
     def plot_pareto(self, top_n):
         pareto_df = self.pareto_df
         pareto_df['work_set_id'] = pareto_df.work_set_id.astype('str')
@@ -186,9 +154,7 @@ class Jackson_GGN_DB(object):
         plt.title('Top ' + str(top_n) + ' work sets', fontsize=25)
         ax2 = ax.twinx()
         ax2.plot(pareto_df.head(top_n).work_set_id, pareto_df.head(top_n)["cumpercentage"], color="r", marker="D", ms=7)
-        # ax2.yaxis.set_major_formatter(plt.PercentFormatter())
         plt.savefig('Pareto_work_sets.pdf')
-
 
     def top_n(self,
               start_date,
@@ -196,10 +162,6 @@ class Jackson_GGN_DB(object):
               work_set_level=False,
               work_set_list=None,
               percent_=90):
-        """
-        work_set_level: Default is False and returns work_skill level. if set to True, returns work_set level
-        percent_ : cumulative % of work_item count we are interested in
-        """
 
         if work_set_level:
 
@@ -239,9 +201,9 @@ class Jackson_GGN_DB(object):
     @classmethod
     def extract_subset_data(self,
                             df: pd.DataFrame,
-                            start_hour: int=6,
-                            end_hour: int=23,
-                            include_weekend: bool=False):
+                            start_hour: int = 6,
+                            end_hour: int = 23,
+                            include_weekend: bool = False):
         '''
         Inputs:
         ----------
@@ -341,14 +303,19 @@ class Jackson_GGN_DB(object):
 
 if __name__ == '__main__':
     jackson_ggn_db = Jackson_GGN_DB(cache_path='./data')
-
-    master_df = jackson_ggn_db.filter_active_work_sets(start_date='2017-01-01',
-                                                       end_date='2019-03-23',
-                                                       active_cutoff='2019-01-01',
-                                                       percent_cutoff=90,
-                                                       from_cache=True)
-    master_df.iloc[:, 150].plot()
-    plt.show()
-    # jackson_ggn_db.plot_pareto(top_n=600)
+    actual_df, predicted_df = jackson_ggn_db.get_summed_work_items_by_work_set(start_date='2017-01-01',
+                                                                               end_date='2017-01-02',
+                                                                               start_hour=6,
+                                                                               end_hour=23,
+                                                                               include_weekend=False,
+                                                                               work_set_list=None)
+    # master_df = jackson_ggn_db.filter_active_work_sets(start_date='2017-01-01',
+    #                                                    end_date='2019-03-23',
+    #                                                    active_cutoff='2019-01-01',
+    #                                                    percent_cutoff=90,
+    #                                                    from_cache=True)
+    # master_df.iloc[:, 150].plot()
+    # plt.show()
+    # # jackson_ggn_db.plot_pareto(top_n=600)
 
     jackson_ggn_db.close()

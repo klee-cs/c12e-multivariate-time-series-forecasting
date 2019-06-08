@@ -3,7 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import collections
-from multi_tsf.time_series_utils import SyntheticSinusoids
+from multi_tsf.time_series_utils import SyntheticSinusoids, train_val_test_split
 from multi_tsf.db_reader import Jackson_GGN_DB
 import tensorflow as tf
 import tensorflow_probability as tfp
@@ -100,23 +100,17 @@ if __name__ == '__main__':
     path = './STS'
     num_forecast_steps = 48*31
 
-    jackson_ggn_db = Jackson_GGN_DB(cache_path='./data')
-    skill_ts = jackson_ggn_db.get_summed_work_items_by_skill(start_date='2017-01-31',
-                                                             end_date='2019-03-22',
-                                                             start_hour=0,
-                                                             end_hour=24,
-                                                             include_weekend=False,
-                                                             from_cache=True,
-                                                             skill_list=jackson_ggn_db.default_skills)
+    train_df, val_df, test_df = train_val_test_split(data_path='./data/top_volume_active_work_sets.csv',
+                                                     save_path='./data',
+                                                     test_cutoff_date='2019-01-01',
+                                                     train_size=0.8)
 
-    data = skill_ts.iloc[:, -1].values
+    data = train_df.iloc[:, -1].values
     training_data = data[:-num_forecast_steps]
 
     tf.reset_default_graph()
     model = build_model(observed_time_series=training_data)
     pprint(model.parameters)
-    print(model.latent_size)
-    exit(0)
 
     with tf.variable_scope('sts_elbo', reuse=tf.AUTO_REUSE):
         elbo_loss, variational_posteriors = tfp.sts.build_factored_variational_loss(
