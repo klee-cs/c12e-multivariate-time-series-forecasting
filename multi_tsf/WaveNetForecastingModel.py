@@ -154,7 +154,7 @@ if __name__ == '__main__':
 
 
     forecast_horizon = 34
-    target_index = 50
+    target_index = 0
     num_samples = 100
     test_y = test_df.iloc[forecast_horizon:, target_index].values
 
@@ -165,7 +165,8 @@ if __name__ == '__main__':
                                          'nb_layers': 8,
                                          'learning_rate': 1e-3,
                                          'l2_regularization': 0.1,
-                                         'num_samples': num_samples
+                                         'num_samples': num_samples,
+                                         'MAE_loss': True
                                      })
 
 
