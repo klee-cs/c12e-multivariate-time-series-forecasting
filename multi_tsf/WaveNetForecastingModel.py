@@ -30,11 +30,13 @@ def wavenet_model_fn(features: tf.Tensor,
     activation = tf.keras.activations.linear
     leaky_relu = tf.keras.layers.LeakyReLU()
     carry = features
-
+    v0 = 1.0 + tf.cumsum(carry, axis=TIME_INDEX) / tf.reshape(tf.range(1, tf.cast(carry.shape[TIME_INDEX]+1, tf.float64)), (1, -1, 1))
+    carry = carry / v0
     # Skip connection
     skip_connection = tf.keras.layers.Conv1D(filters=nb_filters,
                                              kernel_size=1,
                                              padding='same',
+                                             use_bias=True,
                                              activation=activation,
                                              kernel_regularizer=regularizer,
                                              kernel_initializer=initializer,
@@ -44,6 +46,7 @@ def wavenet_model_fn(features: tf.Tensor,
                                         kernel_size=2,
                                         strides=1,
                                         padding='causal',
+                                        use_bias=True,
                                         dilation_rate=1,
                                         activation=activation,
                                         kernel_regularizer=regularizer,
@@ -51,12 +54,13 @@ def wavenet_model_fn(features: tf.Tensor,
                                         kernel_constraint=None)
     with tf.name_scope('Initial-Layer'):
         carry = tf.keras.layers.add([leaky_relu(skip_connection(carry)), leaky_relu(dcc_layer1(carry))])
-    for i in range(nb_layers):
+    for i in range(nb_layers-1):
         with tf.name_scope('Dilated-Stack'):
             dcc_layer = tf.keras.layers.Conv1D(filters=nb_filters,
                                                kernel_size=2,
                                                strides=1,
                                                padding='causal',
+                                               use_bias=True,
                                                dilation_rate=nb_dilation_factors[i],
                                                activation=activation,
                                                kernel_regularizer=regularizer,
@@ -78,49 +82,56 @@ def wavenet_model_fn(features: tf.Tensor,
 
 
     with tf.name_scope('NegBinomial-likelihood'):
-        mu_layer = tf.keras.layers.Conv1D(filters=1,
-                                          kernel_size=1,
-                                          padding='same',
-                                          activation=tf.keras.activations.softplus,
+        tc_layer = tf.keras.layers.Conv1D(filters=1,
+                                          kernel_size=2,
+                                          padding='causal',
+                                          use_bias=True,
+                                          dilation_rate=nb_dilation_factors[-1],
+                                          activation=activation,
                                           kernel_regularizer=regularizer,
                                           kernel_initializer=initializer,
                                           kernel_constraint=None)
-        alpha_layer = tf.keras.layers.Conv1D(filters=1,
-                                             kernel_size=1,
-                                             padding='same',
-                                             activation=activation,
-                                             kernel_regularizer=regularizer,
-                                             kernel_initializer=initializer,
-                                             kernel_constraint=None)
+        logits_layer = tf.keras.layers.Conv1D(filters=1,
+                                              kernel_size=2,
+                                              padding='causal',
+                                              use_bias=True,
+                                              dilation_rate=nb_dilation_factors[-1],
+                                              activation=activation,
+                                              kernel_regularizer=regularizer,
+                                              kernel_initializer=initializer,
+                                              kernel_constraint=None)
 
-        #Try scaling by v
+        total_count = tc_layer(carry)
+        logits = tf.abs(1 + logits_layer(carry))
 
-        mu = mu_layer(carry)
-        alpha = alpha_layer(carry)
-        #Remove batch dimension
-        mu = tf.squeeze(mu, axis=0)
-        alpha = tf.squeeze(alpha, axis=0)
-        nbinomial = tfd.NegativeBinomial(total_count=mu,
-                                         logits=alpha)
+        normal = tfd.Normal(loc=total_count, scale=logits)
+        nbinomial = tfd.NegativeBinomial(total_count=total_count,
+                                         logits=logits)
 
 
     if mode == tf.estimator.ModeKeys.PREDICT:
         predictions = {
-            'pred_y': nbinomial.sample(params['num_samples'])
+            'pred_y': normal.sample(params['num_samples'])
         }
         return tf.estimator.EstimatorSpec(mode, predictions=predictions)
 
 
     if mode == tf.estimator.ModeKeys.TRAIN:
-        ll = nbinomial.log_prob(labels)
+
+        ll = normal.log_prob(labels)
         loss = -tf.reduce_mean(ll, name='loss')
-        tf.summary.histogram(name='ll', values=ll)
-        tf.summary.histogram(name='mu', values=mu)
-        tf.summary.histogram(name='alpha', values=alpha)
+        tf.summary.histogram(name='v', values=v0)
+        tf.summary.histogram(name='total_count', values=total_count)
+        tf.summary.histogram(name='logits', values=logits)
         tf.summary.scalar(name='nll', tensor=loss)
         optimizer = tf.train.AdamOptimizer(params['learning_rate'], name='optimizer')
         train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step())
-        return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op)
+
+        logging_hook = tf.train.LoggingTensorHook({"total_count": tf.reduce_mean(total_count),
+                                                   "logits": tf.reduce_mean(logits),
+                                                   "loss": loss}, every_n_iter=1)
+
+        return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op, training_hooks=[logging_hook])
 
     # if mode == tf.estimator.ModeKeys.TRAIN:
     #     loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(pred_y, labels), name='loss')
@@ -150,7 +161,12 @@ def input_fn(path: str,
 
 
 if __name__ == '__main__':
+    tf.logging.set_verbosity(tf.logging.INFO)
     model_save_path = './estimator_test'
+    try:
+        shutil.rmtree(model_save_path)
+    except:
+        pass
     train_df, val_df, test_df = train_val_test_split(data_path='./data/top_volume_active_work_sets.csv',
                                                      save_path='./data',
                                                      test_cutoff_date='2019-01-01',
@@ -158,9 +174,11 @@ if __name__ == '__main__':
 
 
 
-    forecast_horizon = 48
-    target_index = 1
+    forecast_horizon = 1
+    target_index = 0
+    num_samples = 100
     test_y = test_df.iloc[forecast_horizon:, target_index]
+    train_y = train_df.iloc[forecast_horizon:, target_index]
 
     wavenet = tf.estimator.Estimator(model_fn=wavenet_model_fn,
                                      model_dir=model_save_path,
@@ -169,13 +187,15 @@ if __name__ == '__main__':
                                          'nb_layers': 8,
                                          'learning_rate': 1e-3,
                                          'l2_regularization': 0.1,
-                                         'num_samples': 100
+                                         'num_samples': num_samples
                                      })
+
+
 
     wavenet.train(input_fn=lambda: input_fn(path='./data/train.csv',
                                             target_index=target_index,
                                             forecast_horizon=forecast_horizon,
-                                            num_epochs=10,
+                                            num_epochs=2500,
                                             mode=tf.estimator.ModeKeys.TRAIN))
 
     predictions = wavenet.predict(input_fn=lambda: input_fn(path='./data/test.csv',
@@ -187,14 +207,12 @@ if __name__ == '__main__':
 
     idx = np.arange(0, test_y.shape[0])
     sample_traces = []
-    for p in predictions:
-       pred_y = p['pred_y']
-       sample_traces.append(pred_y)
-    sample_traces = np.array(sample_traces)
-    sample_stds = np.std(sample_traces, axis=0).reshape(-1,)
-    low_percentile = np.percentile(sample_traces, q=2.5, axis=0).reshape(-1,)
-    high_percentile = np.percentile(sample_traces, q=97.5, axis=0).reshape(-1,)
-    sample_mean = np.mean(sample_traces, axis=0).reshape(-1,)
+    pred_y = np.array([p['pred_y'] for p in predictions]).reshape(num_samples, -1)
+    # pred_y[pred_y > 1000] = 0
+    mean_y = np.mean(pred_y, axis=0)
+    low_percentile = np.percentile(pred_y, q=2.5, axis=0).reshape(-1,)
+    high_percentile = np.percentile(pred_y, q=97.5, axis=0).reshape(-1,)
+    sample_mean = np.mean(pred_y, axis=0).reshape(-1,)
     fig, ax = plt.subplots()
     ax.fill_between(idx,
                     low_percentile,
