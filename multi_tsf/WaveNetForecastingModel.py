@@ -105,7 +105,7 @@ def wavenet_model_fn(features: tf.Tensor,
             # Residual Connections
             carry = tf.keras.layers.add([leaky_relu(dcc_layer(carry)), carry])
 
-    with tf.name_scope('Final-Layer'):
+    with tf.name_scope('Point-Estimate'):
         final_dcc_layer = tf.keras.layers.Conv1D(filters=1,
                                                  kernel_size=1,
                                                  strides=1,
@@ -139,7 +139,6 @@ def wavenet_model_fn(features: tf.Tensor,
         total_count = v0 * tf.math.maximum(constant_one, tc_layer(carry))
         logits = logits_layer(carry)
         nbinomial = tfd.NegativeBinomial(total_count=total_count, logits=logits)
-        ll = nbinomial.log_prob(features)
         samples = nbinomial.sample(params['num_samples'])
 
 
@@ -169,16 +168,14 @@ def wavenet_model_fn(features: tf.Tensor,
 
         elif params['MAE_loss'] == False:
             ll = nbinomial.log_prob(labels)
-            loss = -tf.reduce_mean(ll, name='loss')
+            loss = -tf.math.reduce_mean(ll, name='loss')
             tf.summary.histogram(name='total_count', values=total_count)
             tf.summary.histogram(name='logits', values=logits)
             tf.summary.scalar(name='nll', tensor=loss)
             optimizer = tf.train.AdamOptimizer(params['learning_rate'], name='optimizer')
             train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step())
 
-            logging_hook = tf.train.LoggingTensorHook({"total_count": tf.reduce_mean(total_count),
-                                                       "logits": tf.reduce_mean(logits),
-                                                       "loss": loss}, every_n_iter=1)
+            logging_hook = tf.train.LoggingTensorHook({"loss": loss}, every_n_iter=1)
 
             return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op, training_hooks=[logging_hook])
 
@@ -222,9 +219,9 @@ if __name__ == '__main__':
 
 
     forecast_horizon = 34
-    target_index = 20
+    target_index = 75
     num_samples = 100
-    num_epochs = 1000
+    num_epochs = 2500
     test_y = test_df.iloc[forecast_horizon:, target_index].values
 
     wavenet = tf.estimator.Estimator(model_fn=wavenet_model_fn,
@@ -270,7 +267,7 @@ if __name__ == '__main__':
     # plt.show()
 
     pred_y = np.array([p['pred_y'] for p in predictions]).reshape(num_samples, -1, 1)
-    pred_y[pred_y > np.max(test_y)] = 0
+    pred_y[pred_y > 10000] = 10000
     low_percentile = np.percentile(pred_y, q=2.5, axis=0).reshape(-1,)
     high_percentile = np.percentile(pred_y, q=97.5, axis=0).reshape(-1,)
     sample_mean = np.mean(pred_y, axis=0).reshape(-1,)
