@@ -22,7 +22,7 @@ def wavenet_model_fn(features: tf.Tensor,
     leaky_relu = tf.keras.layers.LeakyReLU()
     carry = features
     v0 = 1.0 + tf.cumsum(carry, axis=TIME_INDEX) / tf.reshape(tf.range(1, tf.cast(carry.shape[TIME_INDEX]+1, tf.float64)), (1, -1, 1))
-    # carry = carry / v0
+    carry = carry / tf.reduce_mean(carry)
     # Skip connection
     skip_connection = tf.keras.layers.Conv1D(filters=nb_filters,
                                              kernel_size=1,
@@ -45,7 +45,7 @@ def wavenet_model_fn(features: tf.Tensor,
                                         kernel_constraint=None)
     with tf.name_scope('Initial-Layer'):
         carry = tf.keras.layers.add([leaky_relu(skip_connection(carry)), leaky_relu(dcc_layer1(carry))])
-    for i in range(nb_layers-1):
+    for i in range(nb_layers):
         with tf.name_scope('Dilated-Stack'):
             dcc_layer = tf.keras.layers.Conv1D(filters=nb_filters,
                                                kernel_size=2,
@@ -63,33 +63,38 @@ def wavenet_model_fn(features: tf.Tensor,
 
     with tf.name_scope('NegBinomial-likelihood'):
         tc_layer = tf.keras.layers.Conv1D(filters=1,
-                                          kernel_size=2,
-                                          padding='causal',
+                                          kernel_size=1,
+                                          padding='same',
                                           use_bias=True,
-                                          dilation_rate=nb_dilation_factors[-1],
                                           activation=activation,
                                           kernel_regularizer=regularizer,
                                           kernel_initializer=initializer,
                                           kernel_constraint=None)
 
         logits_layer = tf.keras.layers.Conv1D(filters=1,
-                                                kernel_size=2,
-                                                padding='causal',
-                                                use_bias=True,
-                                                dilation_rate=nb_dilation_factors[-1],
-                                                activation=activation,
-                                                kernel_regularizer=regularizer,
-                                                kernel_initializer=initializer,
-                                                kernel_constraint=None)
+                                              kernel_size=1,
+                                              padding='same',
+                                              use_bias=True,
+                                              activation=tf.keras.activations.softplus,
+                                              kernel_regularizer=regularizer,
+                                              kernel_initializer=initializer,
+                                              kernel_constraint=None)
 
 
         total_count = tc_layer(carry)
         logits = logits_layer(carry)
 
+        loc = tc_layer(carry)
+        scale = logits_layer(carry)
+
         nbinomial = tfd.NegativeBinomial(total_count=total_count, logits=logits)
+        # normal = tfd.Normal(loc=loc, scale=scale)
 
         ll = nbinomial.log_prob(features)
+        # ll = normal.log_prob(features)
+
         samples = nbinomial.sample(params['num_samples'])
+        # samples = normal.sample(params['num_samples'])
 
     return total_count, logits, ll, samples
 
@@ -119,17 +124,14 @@ if __name__ == '__main__':
     logits = logits.reshape(-1, )
     ll = ll.reshape(-1, )
 
-    explosions = np.where(-ll < -10000)
-    non_explosions = np.where(-ll > -10000)
+    explosions = np.where(mean_samples > np.max(y))
+    non_explosions = np.where(mean_samples < np.max(y))
 
-
-    fig, ax = plt.subplots(3, 1)
-    sns.distplot(total_count[explosions], ax=ax[0], kde=False, label='total_count_ex')
-    sns.distplot(total_count[non_explosions], ax=ax[0], kde=False, label='total_count_nex')
-    sns.distplot(logits[explosions], ax=ax[1], kde=False, label='logits_ex')
-    sns.distplot(logits[non_explosions], ax=ax[1], kde=False, label='logits_nex')
-    sns.distplot(y[explosions], ax=ax[2], kde=False, label='data_ex')
-    sns.distplot(y[non_explosions], ax=ax[2], kde=False, label='data_nex')
+    fig, ax = plt.subplots(4, 1)
+    sns.distplot(total_count, ax=ax[0], kde=False, label='total_count')
+    sns.distplot(logits, ax=ax[1], kde=False, label='logits')
+    ax[2].plot(y)
+    ax[3].plot(mean_samples)
     plt.legend()
     plt.show()
 

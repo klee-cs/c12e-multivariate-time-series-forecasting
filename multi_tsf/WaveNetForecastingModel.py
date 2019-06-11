@@ -29,56 +29,104 @@ def wavenet_model_fn(features: tf.Tensor,
     initializer = tf.keras.initializers.he_normal()
     activation = tf.keras.activations.linear
     leaky_relu = tf.keras.layers.LeakyReLU()
+    nb_input_features = features.get_shape().as_list()[CHANNEL_INDEX]
     carry = features
 
-    # Skip connection
-    skip_connection = tf.keras.layers.Conv1D(filters=nb_filters,
-                                             kernel_size=1,
-                                             padding='same',
-                                             use_bias=True,
-                                             activation=activation,
-                                             kernel_regularizer=regularizer,
-                                             kernel_initializer=initializer,
-                                             kernel_constraint=None)
+    if params['conditional']:
+        carries = []
+        for i in range(nb_input_features):
+            with tf.name_scope('Conditional-skip-connections'):
+                carry_i = tf.expand_dims(carry[:, :, i], axis=-1)
+                # Skip connection
+                skip_connection_i = tf.keras.layers.Conv1D(filters=nb_filters,
+                                                           kernel_size=1,
+                                                           padding='same',
+                                                           activation=activation,
+                                                           kernel_regularizer=regularizer,
+                                                           kernel_initializer=initializer)
+                dcc_layer1_i = tf.keras.layers.Conv1D(filters=nb_filters,
+                                                      kernel_size=2,
+                                                      strides=1,
+                                                      padding='causal',
+                                                      dilation_rate=1,
+                                                      activation=activation,
+                                                      kernel_regularizer=regularizer,
+                                                      kernel_initializer=initializer)
+                carry_i = tf.keras.layers.add(
+                    [leaky_relu(skip_connection_i(carry_i)), leaky_relu(dcc_layer1_i(carry_i))])
+            carries.append(carry_i)
+        carry = tf.keras.layers.add(carries)
+        for i in range(nb_layers):
+            with tf.name_scope('Dilated-Stack'):
+                dcc_layer = tf.keras.layers.Conv1D(filters=nb_filters,
+                                                   kernel_size=2,
+                                                   strides=1,
+                                                   padding='causal',
+                                                   dilation_rate=nb_dilation_factors[i],
+                                                   activation=activation,
+                                                   kernel_regularizer=regularizer,
+                                                   kernel_initializer=initializer)
+                # Residual Connections
+                carry = tf.keras.layers.add([leaky_relu(dcc_layer(carry)), carry])
+        with tf.name_scope('Final-Layer'):
+            final_dcc_layer = tf.keras.layers.Conv1D(filters=1,
+                                                     kernel_size=1,
+                                                     strides=1,
+                                                     padding='same',
+                                                     activation=activation,
+                                                     kernel_regularizer=regularizer,
+                                                     kernel_initializer=initializer)
 
-    dcc_layer1 = tf.keras.layers.Conv1D(filters=nb_filters,
-                                        kernel_size=2,
-                                        strides=1,
-                                        padding='causal',
-                                        use_bias=True,
-                                        dilation_rate=1,
-                                        activation=activation,
-                                        kernel_regularizer=regularizer,
-                                        kernel_initializer=initializer,
-                                        kernel_constraint=None)
-    with tf.name_scope('Initial-Layer'):
-        carry = tf.keras.layers.add([leaky_relu(skip_connection(carry)), leaky_relu(dcc_layer1(carry))])
-    for i in range(nb_layers-1):
-        with tf.name_scope('Dilated-Stack'):
-            dcc_layer = tf.keras.layers.Conv1D(filters=nb_filters,
-                                               kernel_size=2,
-                                               strides=1,
-                                               padding='causal',
-                                               use_bias=True,
-                                               dilation_rate=nb_dilation_factors[i],
-                                               activation=activation,
-                                               kernel_regularizer=regularizer,
-                                               kernel_initializer=initializer,
-                                               kernel_constraint=None)
-            # Residual Connections
-            carry = tf.keras.layers.add([leaky_relu(dcc_layer(carry)), carry])
-
-    with tf.name_scope('Final-Layer'):
-        final_dcc_layer = tf.keras.layers.Conv1D(filters=1,
-                                                 kernel_size=2,
-                                                 strides=1,
-                                                 padding='causal',
-                                                 dilation_rate=nb_dilation_factors[-1],
+            pred_y = leaky_relu(final_dcc_layer(carry))
+    else:
+        # Skip connection
+        skip_connection = tf.keras.layers.Conv1D(filters=nb_filters,
+                                                 kernel_size=1,
+                                                 padding='same',
+                                                 use_bias=True,
                                                  activation=activation,
                                                  kernel_regularizer=regularizer,
                                                  kernel_initializer=initializer,
                                                  kernel_constraint=None)
-        pred_y = leaky_relu(final_dcc_layer(carry))
+
+        dcc_layer1 = tf.keras.layers.Conv1D(filters=nb_filters,
+                                            kernel_size=2,
+                                            strides=1,
+                                            padding='causal',
+                                            use_bias=True,
+                                            dilation_rate=1,
+                                            activation=activation,
+                                            kernel_regularizer=regularizer,
+                                            kernel_initializer=initializer,
+                                            kernel_constraint=None)
+        with tf.name_scope('Initial-Layer'):
+            carry = tf.keras.layers.add([leaky_relu(skip_connection(carry)), leaky_relu(dcc_layer1(carry))])
+        for i in range(nb_layers-1):
+            with tf.name_scope('Dilated-Stack'):
+                dcc_layer = tf.keras.layers.Conv1D(filters=nb_filters,
+                                                   kernel_size=2,
+                                                   strides=1,
+                                                   padding='causal',
+                                                   use_bias=True,
+                                                   dilation_rate=nb_dilation_factors[i],
+                                                   activation=activation,
+                                                   kernel_regularizer=regularizer,
+                                                   kernel_initializer=initializer,
+                                                   kernel_constraint=None)
+                # Residual Connections
+                carry = tf.keras.layers.add([leaky_relu(dcc_layer(carry)), carry])
+
+        with tf.name_scope('Final-Layer'):
+            final_dcc_layer = tf.keras.layers.Conv1D(filters=1,
+                                                     kernel_size=2,
+                                                     strides=1,
+                                                     padding='causal',
+                                                     dilation_rate=nb_dilation_factors[-1],
+                                                     activation=activation,
+                                                     kernel_regularizer=regularizer,
+                                                     kernel_initializer=initializer,
+                                                     kernel_constraint=None)
+            pred_y = leaky_relu(final_dcc_layer(carry))
 
 
 
@@ -120,16 +168,22 @@ def wavenet_model_fn(features: tf.Tensor,
     #     return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op, training_hooks=[logging_hook])
 
 
-
 def input_fn(path: str,
              target_index: int,
              forecast_horizon: int,
              num_epochs: Optional[int],
+             conditional: bool,
              mode: str):
     ts_df = pd.read_csv(path, index_col=0)
     time_series = ts_df.values
-    seq_x = time_series[:-forecast_horizon, target_index].reshape(-1, 1)
-    seq_y = time_series[forecast_horizon:, target_index].reshape(-1, 1)
+
+    if conditional:
+        seq_x = time_series[:-forecast_horizon, :]
+        seq_y = time_series[forecast_horizon:, target_index].reshape(-1, 1)
+    else:
+        seq_x = time_series[:-forecast_horizon, target_index].reshape(-1, 1)
+        seq_y = time_series[forecast_horizon:, target_index].reshape(-1, 1)
+
     seq_x = np.expand_dims(seq_x, axis=0)
     seq_y = np.expand_dims(seq_y, axis=0)
     if mode == tf.estimator.ModeKeys.TRAIN:
@@ -152,9 +206,8 @@ if __name__ == '__main__':
                                                      train_size=0.8)
 
 
-
     forecast_horizon = 34
-    target_index = 0
+    target_index = 10
     num_samples = 100
     test_y = test_df.iloc[forecast_horizon:, target_index].values
 
@@ -165,7 +218,7 @@ if __name__ == '__main__':
                                          'nb_layers': 8,
                                          'learning_rate': 1e-3,
                                          'l2_regularization': 0.1,
-                                         'num_samples': num_samples,
+                                         'conditional': True,
                                          'MAE_loss': True
                                      })
 
@@ -175,12 +228,14 @@ if __name__ == '__main__':
                                             target_index=target_index,
                                             forecast_horizon=forecast_horizon,
                                             num_epochs=1000,
+                                            conditional=True,
                                             mode=tf.estimator.ModeKeys.TRAIN))
 
     predictions = wavenet.predict(input_fn=lambda: input_fn(path='./data/test.csv',
                                                             target_index=target_index,
                                                             forecast_horizon=forecast_horizon,
                                                             num_epochs=None,
+                                                            conditional=True,
                                                             mode=tf.estimator.ModeKeys.PREDICT))
 
 
