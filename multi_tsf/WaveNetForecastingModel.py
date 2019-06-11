@@ -32,6 +32,16 @@ def wavenet_model_fn(features: tf.Tensor,
     nb_input_features = features.get_shape().as_list()[CHANNEL_INDEX]
     carry = features
 
+    if params['MAE_loss'] == True:
+        v0 = 0.0
+    elif params['MAE_loss'] == False:
+        batch_size = carry.get_shape().as_list()[BATCH_INDEX]
+        time_steps = carry.get_shape().as_list()[TIME_INDEX]
+        num_channels = carry.get_shape().as_list()[CHANNEL_INDEX]
+        v0 = 1.0 + tf.cumsum(carry, axis=TIME_INDEX) / tf.reshape(tf.range(1.0, tf.cast(time_steps + 1.0, tf.float64)), (1, -1, num_channels))
+        carry = carry / v0
+
+
     if params['conditional']:
         carries = []
         for i in range(nb_input_features):
@@ -52,32 +62,10 @@ def wavenet_model_fn(features: tf.Tensor,
                                                       activation=activation,
                                                       kernel_regularizer=regularizer,
                                                       kernel_initializer=initializer)
-                carry_i = tf.keras.layers.add(
-                    [leaky_relu(skip_connection_i(carry_i)), leaky_relu(dcc_layer1_i(carry_i))])
+                carry_i = tf.keras.layers.add([leaky_relu(skip_connection_i(carry_i)), leaky_relu(dcc_layer1_i(carry_i))])
             carries.append(carry_i)
         carry = tf.keras.layers.add(carries)
-        for i in range(nb_layers):
-            with tf.name_scope('Dilated-Stack'):
-                dcc_layer = tf.keras.layers.Conv1D(filters=nb_filters,
-                                                   kernel_size=2,
-                                                   strides=1,
-                                                   padding='causal',
-                                                   dilation_rate=nb_dilation_factors[i],
-                                                   activation=activation,
-                                                   kernel_regularizer=regularizer,
-                                                   kernel_initializer=initializer)
-                # Residual Connections
-                carry = tf.keras.layers.add([leaky_relu(dcc_layer(carry)), carry])
-        with tf.name_scope('Final-Layer'):
-            final_dcc_layer = tf.keras.layers.Conv1D(filters=1,
-                                                     kernel_size=1,
-                                                     strides=1,
-                                                     padding='same',
-                                                     activation=activation,
-                                                     kernel_regularizer=regularizer,
-                                                     kernel_initializer=initializer)
 
-            pred_y = leaky_relu(final_dcc_layer(carry))
     else:
         # Skip connection
         skip_connection = tf.keras.layers.Conv1D(filters=nb_filters,
@@ -101,71 +89,98 @@ def wavenet_model_fn(features: tf.Tensor,
                                             kernel_constraint=None)
         with tf.name_scope('Initial-Layer'):
             carry = tf.keras.layers.add([leaky_relu(skip_connection(carry)), leaky_relu(dcc_layer1(carry))])
-        for i in range(nb_layers-1):
-            with tf.name_scope('Dilated-Stack'):
-                dcc_layer = tf.keras.layers.Conv1D(filters=nb_filters,
-                                                   kernel_size=2,
-                                                   strides=1,
-                                                   padding='causal',
-                                                   use_bias=True,
-                                                   dilation_rate=nb_dilation_factors[i],
-                                                   activation=activation,
-                                                   kernel_regularizer=regularizer,
-                                                   kernel_initializer=initializer,
-                                                   kernel_constraint=None)
-                # Residual Connections
-                carry = tf.keras.layers.add([leaky_relu(dcc_layer(carry)), carry])
 
-        with tf.name_scope('Final-Layer'):
-            final_dcc_layer = tf.keras.layers.Conv1D(filters=1,
-                                                     kernel_size=2,
-                                                     strides=1,
-                                                     padding='causal',
-                                                     dilation_rate=nb_dilation_factors[-1],
-                                                     activation=activation,
-                                                     kernel_regularizer=regularizer,
-                                                     kernel_initializer=initializer,
-                                                     kernel_constraint=None)
-            pred_y = leaky_relu(final_dcc_layer(carry))
+    for i in range(nb_layers):
+        with tf.name_scope('Dilated-Stack'):
+            dcc_layer = tf.keras.layers.Conv1D(filters=nb_filters,
+                                               kernel_size=2,
+                                               strides=1,
+                                               padding='causal',
+                                               use_bias=True,
+                                               dilation_rate=nb_dilation_factors[i],
+                                               activation=activation,
+                                               kernel_regularizer=regularizer,
+                                               kernel_initializer=initializer,
+                                               kernel_constraint=None)
+            # Residual Connections
+            carry = tf.keras.layers.add([leaky_relu(dcc_layer(carry)), carry])
 
+    with tf.name_scope('Final-Layer'):
+        final_dcc_layer = tf.keras.layers.Conv1D(filters=1,
+                                                 kernel_size=1,
+                                                 strides=1,
+                                                 padding='same',
+                                                 activation=activation,
+                                                 kernel_regularizer=regularizer,
+                                                 kernel_initializer=initializer,
+                                                 kernel_constraint=None)
+        pred_y = leaky_relu(final_dcc_layer(carry))
 
+    with tf.name_scope('Negative-Binomial-Likelihood'):
+        tc_layer = tf.keras.layers.Conv1D(filters=1,
+                                          kernel_size=1,
+                                          padding='same',
+                                          use_bias=True,
+                                          activation=activation,
+                                          kernel_regularizer=regularizer,
+                                          kernel_initializer=initializer,
+                                          kernel_constraint=None)
+
+        logits_layer = tf.keras.layers.Conv1D(filters=1,
+                                              kernel_size=1,
+                                              padding='same',
+                                              use_bias=True,
+                                              activation=activation,
+                                              kernel_regularizer=regularizer,
+                                              kernel_initializer=initializer,
+                                              kernel_constraint=None)
+
+        constant_one = tf.constant(1., dtype=tf.float64)
+        total_count = v0 * tf.math.maximum(constant_one, tc_layer(carry))
+        logits = logits_layer(carry)
+        nbinomial = tfd.NegativeBinomial(total_count=total_count, logits=logits)
+        ll = nbinomial.log_prob(features)
+        samples = nbinomial.sample(params['num_samples'])
 
 
     if mode == tf.estimator.ModeKeys.PREDICT:
-        predictions = {
-            'pred_y': pred_y
-        }
+        if params['MAE_loss'] == True:
+            predictions = {
+                'pred_y': pred_y
+            }
+        elif params['MAE_loss'] == False:
+            predictions = {
+                'pred_y': samples
+            }
         return tf.estimator.EstimatorSpec(mode, predictions=predictions)
 
     if mode == tf.estimator.ModeKeys.TRAIN:
-        loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(pred_y, labels), name='loss')
-        naive_loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(features, labels))
-        tf.summary.scalar(name='MAE', tensor=loss)
-        tf.summary.scalar(name='Naive-MAE', tensor=naive_loss)
-        optimizer = tf.train.AdamOptimizer(params['learning_rate'], name='optimizer')
-        train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step())
+        if params['MAE_loss'] == True:
+            loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(pred_y, labels), name='loss')
+            naive_loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(features, labels))
+            tf.summary.scalar(name='MAE', tensor=loss)
+            tf.summary.scalar(name='Naive-MAE', tensor=naive_loss)
+            optimizer = tf.train.AdamOptimizer(params['learning_rate'], name='optimizer')
+            train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step())
 
-        logging_hook = tf.train.LoggingTensorHook({"loss": loss}, every_n_iter=1)
+            logging_hook = tf.train.LoggingTensorHook({"loss": loss}, every_n_iter=1)
 
-        return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op, training_hooks=[logging_hook])
+            return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op, training_hooks=[logging_hook])
 
+        elif params['MAE_loss'] == False:
+            ll = nbinomial.log_prob(labels)
+            loss = -tf.reduce_mean(ll, name='loss')
+            tf.summary.histogram(name='total_count', values=total_count)
+            tf.summary.histogram(name='logits', values=logits)
+            tf.summary.scalar(name='nll', tensor=loss)
+            optimizer = tf.train.AdamOptimizer(params['learning_rate'], name='optimizer')
+            train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step())
 
-    # if mode == tf.estimator.ModeKeys.TRAIN:
-    #
-    #     ll = normal.log_prob(labels)
-    #     loss = -tf.reduce_mean(ll, name='loss')
-    #     tf.summary.histogram(name='v', values=v0)
-    #     tf.summary.histogram(name='total_count', values=total_count)
-    #     tf.summary.histogram(name='logits', values=logits)
-    #     tf.summary.scalar(name='nll', tensor=loss)
-    #     optimizer = tf.train.AdamOptimizer(params['learning_rate'], name='optimizer')
-    #     train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step())
-    #
-    #     logging_hook = tf.train.LoggingTensorHook({"total_count": tf.reduce_mean(total_count),
-    #                                                "logits": tf.reduce_mean(logits),
-    #                                                "loss": loss}, every_n_iter=1)
-    #
-    #     return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op, training_hooks=[logging_hook])
+            logging_hook = tf.train.LoggingTensorHook({"total_count": tf.reduce_mean(total_count),
+                                                       "logits": tf.reduce_mean(logits),
+                                                       "loss": loss}, every_n_iter=1)
+
+            return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op, training_hooks=[logging_hook])
 
 
 def input_fn(path: str,
@@ -207,8 +222,9 @@ if __name__ == '__main__':
 
 
     forecast_horizon = 34
-    target_index = 10
+    target_index = 20
     num_samples = 100
+    num_epochs = 1000
     test_y = test_df.iloc[forecast_horizon:, target_index].values
 
     wavenet = tf.estimator.Estimator(model_fn=wavenet_model_fn,
@@ -218,8 +234,9 @@ if __name__ == '__main__':
                                          'nb_layers': 8,
                                          'learning_rate': 1e-3,
                                          'l2_regularization': 0.1,
-                                         'conditional': True,
-                                         'MAE_loss': True
+                                         'conditional': False,
+                                         'num_samples': num_samples,
+                                         'MAE_loss': False
                                      })
 
 
@@ -227,38 +244,43 @@ if __name__ == '__main__':
     wavenet.train(input_fn=lambda: input_fn(path='./data/train.csv',
                                             target_index=target_index,
                                             forecast_horizon=forecast_horizon,
-                                            num_epochs=1000,
-                                            conditional=True,
+                                            num_epochs=num_epochs,
+                                            conditional=False,
                                             mode=tf.estimator.ModeKeys.TRAIN))
+
+    # early_stopping = tf.estimator.stop_if_no_decrease_hook(
+    #     wavenet,
+    #     metric_name='loss',
+    #     max_steps_without_decrease=1000,
+    #     min_steps=100
+    # )
 
     predictions = wavenet.predict(input_fn=lambda: input_fn(path='./data/test.csv',
                                                             target_index=target_index,
                                                             forecast_horizon=forecast_horizon,
                                                             num_epochs=None,
-                                                            conditional=True,
+                                                            conditional=False,
                                                             mode=tf.estimator.ModeKeys.PREDICT))
 
 
     idx = np.arange(0, test_y.shape[0])
-    pred_y = np.array([p['pred_y'] for p in predictions]).reshape(-1, )
-    plt.plot(test_y)
-    plt.plot(pred_y)
-    plt.show()
-
-
-
-    # # pred_y[pred_y > 1000] = 0
-    # mean_y = np.mean(pred_y, axis=0)
-    # low_percentile = np.percentile(pred_y, q=2.5, axis=0).reshape(-1,)
-    # high_percentile = np.percentile(pred_y, q=97.5, axis=0).reshape(-1,)
-    # sample_mean = np.mean(pred_y, axis=0).reshape(-1,)
-    # fig, ax = plt.subplots()
-    # ax.fill_between(idx,
-    #                 low_percentile,
-    #                 high_percentile,
-    #                 alpha=0.1, color='b')
-    # ax.plot(idx, test_y, label='actual')
-    # ax.plot(idx, sample_mean, label='predicted')
-    # ax.legend()
+    # pred_y = np.array([p['pred_y'] for p in predictions]).reshape(-1, )
+    # plt.plot(test_y)
+    # plt.plot(pred_y)
     # plt.show()
 
+    pred_y = np.array([p['pred_y'] for p in predictions]).reshape(num_samples, -1, 1)
+    pred_y[pred_y > np.max(test_y)] = 0
+    low_percentile = np.percentile(pred_y, q=2.5, axis=0).reshape(-1,)
+    high_percentile = np.percentile(pred_y, q=97.5, axis=0).reshape(-1,)
+    sample_mean = np.mean(pred_y, axis=0).reshape(-1,)
+    fig, ax = plt.subplots()
+    ax.fill_between(idx,
+                    low_percentile,
+                    high_percentile,
+                    alpha=0.1, color='b')
+    ax.plot(idx, test_y, label='actual')
+    ax.plot(idx, sample_mean, label='predicted')
+    ax.legend()
+    plt.show()
+    #

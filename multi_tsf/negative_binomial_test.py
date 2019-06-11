@@ -21,8 +21,8 @@ def wavenet_model_fn(features: tf.Tensor,
     activation = tf.keras.activations.linear
     leaky_relu = tf.keras.layers.LeakyReLU()
     carry = features
-    v0 = 1.0 + tf.cumsum(carry, axis=TIME_INDEX) / tf.reshape(tf.range(1, tf.cast(carry.shape[TIME_INDEX]+1, tf.float64)), (1, -1, 1))
-    carry = carry / tf.reduce_mean(carry)
+    v0 = 1.0 + tf.cumsum(carry, axis=TIME_INDEX) / tf.reshape(tf.range(1.0, tf.cast(carry.shape[TIME_INDEX]+1, tf.float64)), (1, -1, 1))
+    carry = carry / v0
     # Skip connection
     skip_connection = tf.keras.layers.Conv1D(filters=nb_filters,
                                              kernel_size=1,
@@ -75,19 +75,19 @@ def wavenet_model_fn(features: tf.Tensor,
                                               kernel_size=1,
                                               padding='same',
                                               use_bias=True,
-                                              activation=tf.keras.activations.softplus,
+                                              activation=activation,
                                               kernel_regularizer=regularizer,
                                               kernel_initializer=initializer,
                                               kernel_constraint=None)
 
-
-        total_count = tc_layer(carry)
+        constant_one = tf.constant(1., dtype=tf.float64)
+        total_count = v0 * tf.math.maximum(constant_one, tc_layer(carry))
         logits = logits_layer(carry)
 
         loc = tc_layer(carry)
         scale = logits_layer(carry)
 
-        nbinomial = tfd.NegativeBinomial(total_count=total_count, logits=logits)
+        nbinomial = tfd.NegativeBinomial(total_count=total_count, probs=logits)
         # normal = tfd.Normal(loc=loc, scale=scale)
 
         ll = nbinomial.log_prob(features)
@@ -102,6 +102,13 @@ if __name__ == '__main__':
     ts_df = pd.read_csv('./data/top_volume_active_work_sets.csv', index_col=0)
     y = ts_df.iloc[:, 0].values.reshape(1, -1, 1)
     length = y.shape[0]
+
+    # z = y.reshape(-1, )
+    # v0 = 1 + np.cumsum(z, axis=0) / np.arange(1, z.shape[0] + 1)
+    # plt.plot(v0)
+    # plt.show()
+    #
+    # exit(0)
 
     x = tf.constant(y)
 
@@ -127,11 +134,20 @@ if __name__ == '__main__':
     explosions = np.where(mean_samples > np.max(y))
     non_explosions = np.where(mean_samples < np.max(y))
 
-    fig, ax = plt.subplots(4, 1)
-    sns.distplot(total_count, ax=ax[0], kde=False, label='total_count')
-    sns.distplot(logits, ax=ax[1], kde=False, label='logits')
-    ax[2].plot(y)
-    ax[3].plot(mean_samples)
+    fig, ax = plt.subplots(3, 1)
+    ax[0].scatter(total_count, logits)
+    ax[0].scatter(total_count[explosions], logits[explosions])
+    ax[0].set_xlabel('total count')
+    ax[0].set_ylabel('logits')
+    ax[1].scatter(y, -ll)
+    ax[1].set_xlabel('data')
+    ax[1].set_ylabel('NLL')
+    # ax[1].plot(logits)
+    # sns.distplot(total_count, ax=ax[0], kde=False, label='total_count')
+    # sns.distplot(logits, ax=ax[1], kde=False, label='logits')
+    # sns.distplot(y, ax=ax[2], kde=False, label='mean_samples')
+    # sns.distplot(mean_samples, ax=ax[3], kde=False, label='mean_samples')
+    ax[2].plot(mean_samples)
     plt.legend()
     plt.show()
 
