@@ -161,9 +161,7 @@ def wavenet_model_fn(features: tf.Tensor,
             tf.summary.scalar(name='Naive-MAE', tensor=naive_loss)
             optimizer = tf.train.AdamOptimizer(params['learning_rate'], name='optimizer')
             train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step())
-
             logging_hook = tf.train.LoggingTensorHook({"loss": loss}, every_n_iter=1)
-
             return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op, training_hooks=[logging_hook])
 
         elif params['MAE_loss'] == False:
@@ -174,10 +172,31 @@ def wavenet_model_fn(features: tf.Tensor,
             tf.summary.scalar(name='nll', tensor=loss)
             optimizer = tf.train.AdamOptimizer(params['learning_rate'], name='optimizer')
             train_op = optimizer.minimize(loss, global_step=tf.train.get_global_step())
-
             logging_hook = tf.train.LoggingTensorHook({"loss": loss}, every_n_iter=1)
-
             return tf.estimator.EstimatorSpec(mode, loss=loss, train_op=train_op, training_hooks=[logging_hook])
+
+    if mode == tf.estimator.ModeKeys.EVAL:
+        if params['MAE_loss'] == True:
+            loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(pred_y, labels), name='loss')
+            naive_loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(features, labels))
+            eval_metric_ops = {
+                'MAE': loss,
+                'naive_MAE': naive_loss
+            }
+        elif params['MAE_loss'] == False:
+            ll = nbinomial.log_prob(labels)
+            loss = -tf.math.reduce_mean(ll, name='loss')
+            naive_loss = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(features, labels))
+            mean_pred_y = tf.math.reduce_mean(samples, axis=0)
+            mae = tf.math.reduce_mean(tf.keras.losses.mean_absolute_error(mean_pred_y, labels), name='loss')
+            eval_metric_ops = {
+                'NLL': loss,
+                'naive_MAE': naive_loss,
+                'mae': mae
+            }
+
+        return tf.estimator.EstimatorSpec(
+            mode, loss=loss, eval_metric_ops=eval_metric_ops)
 
 
 def input_fn(path: str,
@@ -188,22 +207,23 @@ def input_fn(path: str,
              mode: str):
     ts_df = pd.read_csv(path, index_col=0)
     time_series = ts_df.values
-
     if conditional:
         seq_x = time_series[:-forecast_horizon, :]
         seq_y = time_series[forecast_horizon:, target_index].reshape(-1, 1)
     else:
         seq_x = time_series[:-forecast_horizon, target_index].reshape(-1, 1)
         seq_y = time_series[forecast_horizon:, target_index].reshape(-1, 1)
-
     seq_x = np.expand_dims(seq_x, axis=0)
     seq_y = np.expand_dims(seq_y, axis=0)
     if mode == tf.estimator.ModeKeys.TRAIN:
         dataset = tf.data.Dataset.from_tensor_slices((seq_x, seq_y)).repeat(num_epochs).batch(batch_size=1)
-    elif mode == tf.estimator.ModeKeys.PREDICT:
+    elif mode == tf.estimator.ModeKeys.PREDICT or mode == tf.estimator.ModeKeys.EVAL:
         dataset = tf.data.Dataset.from_tensor_slices((seq_x, seq_y)).batch(batch_size=1)
     return dataset
 
+
+def plot_predictions():
+    pass
 
 if __name__ == '__main__':
     tf.logging.set_verbosity(tf.logging.INFO)
@@ -217,11 +237,10 @@ if __name__ == '__main__':
                                                      test_cutoff_date='2019-01-01',
                                                      train_size=0.8)
 
-
     forecast_horizon = 34
     target_index = 75
     num_samples = 100
-    num_epochs = 2500
+    num_epochs = 100
     test_y = test_df.iloc[forecast_horizon:, target_index].values
 
     wavenet = tf.estimator.Estimator(model_fn=wavenet_model_fn,
@@ -245,12 +264,15 @@ if __name__ == '__main__':
                                             conditional=False,
                                             mode=tf.estimator.ModeKeys.TRAIN))
 
-    # early_stopping = tf.estimator.stop_if_no_decrease_hook(
-    #     wavenet,
-    #     metric_name='loss',
-    #     max_steps_without_decrease=1000,
-    #     min_steps=100
-    # )
+    # val_results = wavenet.evaluate(input_fn=lambda: input_fn(path='./data/val.csv',
+    #                                                          target_index=target_index,
+    #                                                          forecast_horizon=forecast_horizon,
+    #                                                          num_epochs=None,
+    #                                                          conditional=False,
+    #                                                          mode=tf.estimator.ModeKeys.EVAL))
+    #
+    # print(val_results)
+
 
     predictions = wavenet.predict(input_fn=lambda: input_fn(path='./data/test.csv',
                                                             target_index=target_index,
@@ -258,6 +280,7 @@ if __name__ == '__main__':
                                                             num_epochs=None,
                                                             conditional=False,
                                                             mode=tf.estimator.ModeKeys.PREDICT))
+
 
 
     idx = np.arange(0, test_y.shape[0])
@@ -280,4 +303,3 @@ if __name__ == '__main__':
     ax.plot(idx, sample_mean, label='predicted')
     ax.legend()
     plt.show()
-    #
