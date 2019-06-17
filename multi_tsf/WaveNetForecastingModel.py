@@ -273,7 +273,6 @@ if __name__ == '__main__':
 
     print(val_results)
 
-
     predictions = wavenet.predict(input_fn=lambda: input_fn(path='./data/test.csv',
                                                             target_index=target_index,
                                                             forecast_horizon=forecast_horizon,
